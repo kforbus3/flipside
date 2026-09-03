@@ -137,8 +137,15 @@ with open(os.path.join(OUT, "bundles", "fixture-b.raucb.packages.tsv"), "w") as 
 
 r = client.get("/api/sbom", params={"package": "^openssl$"}, headers=AUTH).json()
 found = sorted(x["artifact"] for x in r["results"])
-check("both artifacts carrying openssl are named",
-      found == ["fixture-a.img", "fixture-b.raucb"], found)
+# A superset, not an exact list: on a host with dpkg the generator section above
+# has already written a third artifact that also contains openssl, and asserting
+# equality would make this pass on a Mac and fail on the CI runner for a reason
+# that has nothing to do with the search.
+check("both fixture artifacts carrying openssl are named",
+      {"fixture-a.img", "fixture-b.raucb"} <= set(found), found)
+check("and nothing without openssl is",
+      all("openssl" in [m["package"] for m in x["matches"]] for x in r["results"]),
+      [(x["artifact"], x["matches"]) for x in r["results"]])
 kinds = {x["artifact"]: x["kind"] for x in r["results"]}
 check("bundles are distinguished from images",
       kinds.get("fixture-b.raucb") == "bundle", kinds)
