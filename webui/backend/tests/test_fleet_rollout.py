@@ -327,6 +327,48 @@ rec["machines"][taken]["at"] -= rollouts_mod.OFFER_TIMEOUT_SECONDS + 60
 check("once the offer times out the slot is freed",
       beat(other).get("action") == "update", rollout(TID)["counts"])
 
+print("== an observed report advances a rollout a machine could not report on ==")
+# The case: a machine Moorgate can reach and this server cannot. It installs
+# perfectly and then has nowhere to say so, and without this the rollout waits
+# for a check-in that can never arrive.
+fleet.reload()
+rollouts_mod.rollouts.reload()
+beat("ob1")
+client.put("/api/fleet/hosts/ob1", json={"groups": ["observed"]}, headers=AUTH)
+r = client.post("/api/rollouts", json={
+    "bundle": "flipside-2.0.raucb", "groups": ["observed"],
+    "strategy": {"canary": 0, "batch_size": 5, "soak_seconds": 0, "max_failures": 5},
+}, headers=AUTH)
+OID = r.json()["id"]
+check("the machine is offered the update", beat("ob1").get("action") == "update")
+r = client.post("/api/fleet/report", headers=AUTH,
+                json={"id": "ob1", "version": "2.0", "health": "ok",
+                      "observed_by": "moorgate"})
+check("an operator may report on a machine's behalf", r.status_code == 200, r.text[:200])
+check("and the rollout counts it as done",
+      rollout(OID)["machines"]["ob1"]["state"] == "verified",
+      rollout(OID)["machines"]["ob1"])
+
+print("== but only an operator, and only with something to say ==")
+# A machine on the provisioning network must not be able to use this to claim
+# things about another machine; the heartbeat is the endpoint machines get.
+check("it is not open the way the heartbeat is",
+      client.post("/api/fleet/report", json={"id": "ob1", "version": "9"}).status_code == 401)
+r = client.post("/api/fleet/report", headers=AUTH, json={"id": "ob1"})
+check("a report with no version is refused", r.status_code == 400, r.status_code)
+r = client.post("/api/fleet/report", headers=AUTH, json={"version": "2.0"})
+check("and so is one with no machine", r.status_code == 400, r.status_code)
+
+print("== who observed it is recorded, because it is weaker or stronger evidence ==")
+rows = client.get("/api/fleet", headers=AUTH).json()["machines"]
+row = next((m for m in rows if m["id"] == "ob1"), {})
+check("the fleet records that this came from an observer",
+      row.get("report_source") == "observed" and row.get("reported_by") == "moorgate", row)
+events = client.get("/api/audit", headers=AUTH).json()["events"]
+check("and the report is audited, unlike a heartbeat",
+      any(e["path"] == "/api/fleet/report" for e in events),
+      [e["path"] for e in events[:5]])
+
 print("== the audit trail covers the control plane, but not the machines ==")
 lines = client.get("/api/audit", headers=AUTH).json()["events"]
 paths = [e["path"] for e in lines]
