@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- backend runtime ----
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app STATIC_DIR=/app/static
 
 # Docker CLI + buildx + compose plugins so the UI can orchestrate sibling
