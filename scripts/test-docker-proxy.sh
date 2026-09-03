@@ -78,9 +78,10 @@ else
         # reported as one -- but say so, rather than staying quiet.
         echo "  SKIP  docker build (this runner cannot reach a registry)"
     else
-        bad "docker build" "(output below, proxy log at $WORK/proxy.log)"
+        bad "docker build" "(output below)"
         tail -20 "$WORK/build.log" | sed 's/^/        /'
-        grep DENY "$WORK/proxy.log" | tail -5 | sed 's/^/        /'
+        echo "        --- every call the proxy saw during the build ---"
+        sed 's/^/        /' "$WORK/proxy.log"
     fi
 fi
 
@@ -173,6 +174,18 @@ code=$(api POST "/commit?container=dp-test-victim&repo=exfil" '')
 code=$(api GET "/containers/json/../../secrets" '')
 [ "$code" = "403" ] && pass "a traversal in the path is refused" \
                     || bad "a traversal in the path is refused" "got $code"
+
+echo "== a second request on the same connection is not smuggled through =="
+# The docker CLI keeps connections alive. A proxy that checked the first request
+# and then relayed raw would pass everything after it -- and "everything after
+# it" is chosen by whoever is talking to the proxy. This sends an allowed
+# request and a denied one down one socket, pipelined, and asserts the daemon
+# never answers the second.
+if python3 "$(dirname "$0")/dp-pipeline-check.py" "$WORK/shared/docker.sock"; then
+    pass "a pipelined denied request does not reach the daemon"
+else
+    bad "a pipelined denied request does not reach the daemon"
+fi
 
 echo "== every decision is logged =="
 grep -q "^.*DENY POST /containers/create" "$WORK/proxy.log" \
