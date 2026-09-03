@@ -94,6 +94,20 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
 
     # Images: build them, list them, and remove the ones we built.
     ("POST",   re.compile(r"^/(v[\d.]+/)?build$")),
+    # BuildKit, which is what `docker build` actually uses on every current
+    # Docker. It does not use /build at all: it opens a hijacked session for the
+    # build context and speaks gRPC over /grpc. Without these two, every build
+    # fails with a bare 403 that names neither the call nor the reason -- which
+    # is exactly how this was found, by a build that silently would not run.
+    #
+    # This does not widen the trust boundary. A build is already arbitrary code
+    # in a container by definition, and BuildKit's sources come from the client
+    # session (this proxy's client, i.e. the web UI) and from images, not from
+    # arbitrary host paths. The boundary that matters is "can start a build",
+    # and the documentation already says that is host-root-equivalent because
+    # the image builder runs privileged.
+    ("POST",   re.compile(r"^/(v[\d.]+/)?session$")),
+    ("POST",   re.compile(r"^/(v[\d.]+/)?grpc$")),
     ("GET",    re.compile(r"^/(v[\d.]+/)?images/json$")),
     ("GET",    re.compile(r"^/(v[\d.]+/)?images/[\w.\-/:]+/json$")),
     ("DELETE", re.compile(r"^/(v[\d.]+/)?images/[\w.\-/:]+$")),
