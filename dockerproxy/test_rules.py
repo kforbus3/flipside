@@ -46,6 +46,11 @@ for method, path in [
     ("POST", "/containers/create"), ("POST", "/v1.45/containers/abc/start"),
     ("POST", "/containers/abc/wait"), ("GET", "/containers/abc/logs?follow=1"),
     ("DELETE", "/containers/abc"), ("POST", "/build?t=debian-ab-builder"),
+    # BuildKit's two endpoints. `docker build` on any current Docker uses these
+    # and not /build, so leaving them off makes every build fail with a bare
+    # 403 -- the "too tight" failure this proxy's tests exist to catch, and how
+    # it was found: a build that silently would not run.
+    ("POST", "/session"), ("POST", "/grpc"),
     ("GET", "/containers/json?all=1"), ("GET", "/images/json"),
     ("POST", "/networks/create"), ("POST", "/networks/abc/connect"),
 ]:
