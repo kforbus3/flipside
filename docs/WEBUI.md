@@ -441,7 +441,7 @@ makes and refuses everything else:
 
 | refused | what it would otherwise be |
 | --- | --- |
-| `exec`, `attach` | a shell in any container on the host |
+| `exec` | running a command of your choosing inside any container on the host |
 | `images/create` | pulling and running an arbitrary image |
 | `commit`, `push` | exfiltrating a container as an image |
 | binds outside the project | reading or writing any host path |
@@ -449,6 +449,13 @@ makes and refuses everything else:
 | `Privileged` on any image but the builder/imager | host root |
 | `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode` = `host` | escaping the namespace |
 | swarm secrets, configs, plugins | cluster credentials, daemon code loading |
+
+`attach` **is** allowed, and it is worth being clear about why: `docker run` in
+the foreground streams a container's output through it, and every build here is
+a foreground run whose output becomes the job log. Denying it would not harden
+anything — it would just mean builds produce no output. Attach connects to a
+container's existing stdio; `exec` starts a new process of the caller's
+choosing. The second is the escape, and it stays denied.
 
 Every decision is logged, so what the UI asks the daemon to do is visible:
 
