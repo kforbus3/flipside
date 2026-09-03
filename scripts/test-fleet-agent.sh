@@ -80,6 +80,10 @@ export AB_AGENT_CONF="$WORK/agent.conf"
 export AB_AGENT_STATE_DIR="$WORK/state"
 export AB_AGENT_MARKER="$WORK/boot/ab-deploy.json"
 export AB_AGENT_VERSION_FILE="$WORK/lib/version"
+export AB_AGENT_BOOT_DIR="$WORK/boot"
+# No slot on the kernel command line until the test that needs one writes it.
+printf 'BOOT_IMAGE=/vmlinuz root=LABEL=rootfs-a\n' > "$WORK/cmdline"
+export AB_AGENT_CMDLINE="$WORK/cmdline"
 export AB_AGENT_UPDATE_CMD="$WORK/update-stub"
 
 # Nothing here may reboot the machine running the test suite.
@@ -163,6 +167,27 @@ printf 'ok=true\naction=none\n' > "$WORK/srv/reply"
 last=$(wc -l < "$WORK/srv/requests" | tr -d ' ')
 check "it reports the version it is actually running" "$(field "$last" version)" "2.0"
 check "and is no longer claiming to be mid-update" "$(field "$last" update_state)" "idle"
+
+echo "== a slot updated by a bundle reports the bundle's version, not the image's =="
+# The image stamps /usr/lib/flipside/version at build time; a bundle's install
+# hook stamps /boot/<slot>/ab-version for the slot it wrote. The second has to
+# win, or a machine that has been updated keeps reporting the version it was
+# originally imaged with -- every rollout containing it runs forever, and
+# nothing says why.
+mkdir -p "$WORK/boot/B"
+printf '%s\n' "9.9-from-bundle" > "$WORK/boot/B/ab-version"
+printf 'BOOT_IMAGE=/vmlinuz root=LABEL=rootfs-b rauc.slot=B quiet\n' > "$WORK/cmdline"
+"$AGENT" >/dev/null 2>&1
+last=$(wc -l < "$WORK/srv/requests" | tr -d ' ')
+check "the per-slot stamp wins over the image's" "$(field "$last" version)" "9.9-from-bundle"
+check "and the slot it came from is reported too" "$(field "$last" slot)" "B"
+# A slot with no stamp -- never updated, straight from the imager -- still
+# reports the image's own version rather than nothing.
+rm -f "$WORK/boot/B/ab-version"
+"$AGENT" >/dev/null 2>&1
+last=$(wc -l < "$WORK/srv/requests" | tr -d ' ')
+check "an un-updated slot falls back to the image stamp" \
+      "$(field "$last" version)" "$(cat "$AB_AGENT_VERSION_FILE")"
 
 echo "== a failed install is reported, not swallowed =="
 echo 1 > "$WORK/update-rc"

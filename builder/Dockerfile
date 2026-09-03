@@ -43,9 +43,9 @@ RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/sbin/udevadm \
     && chmod +x /usr/local/sbin/udevadm
 
 WORKDIR /build
-COPY build-image.sh make-bundle.sh /build/
+COPY build-image.sh make-bundle.sh make-sbom.sh /build/
 COPY overlay /build/overlay
-RUN chmod +x /build/build-image.sh /build/make-bundle.sh
+RUN chmod +x /build/build-image.sh /build/make-bundle.sh /build/make-sbom.sh
 
 VOLUME /output
 ENTRYPOINT ["/build/build-image.sh"]

@@ -33,6 +33,8 @@ STATE_DIR="${AB_AGENT_STATE_DIR:-/var/lib/flipside}"
 STATE="$STATE_DIR/agent-state"
 MARKER="${AB_AGENT_MARKER:-/boot/ab-deploy.json}"
 VERSION_FILE="${AB_AGENT_VERSION_FILE:-/usr/lib/flipside/version}"
+BOOT_VERSION_DIR="${AB_AGENT_BOOT_DIR:-/boot}"
+CMDLINE="${AB_AGENT_CMDLINE:-/proc/cmdline}"
 UPDATE_CMD="${AB_AGENT_UPDATE_CMD:-/usr/local/sbin/ab-update.sh}"
 AGENT_VERSION=1
 
@@ -100,10 +102,19 @@ machine_id() {
 }
 
 running_version() {
-    # Written into the root filesystem when the image was built and again when a
-    # bundle was made from it, so it describes the slot that is running rather
-    # than anything about this disk. A rollback lands on the other slot's own
-    # copy, which is the version it really is.
+    # Two sources, in order, because a slot can arrive two ways.
+    #
+    # A bundle's install hook writes /boot/<A|B>/ab-version beside the kernel it
+    # installed for that slot, so this is the authority once a machine has ever
+    # been updated -- and it is per-slot, so a rollback reports the version it
+    # rolled back to instead of insisting it is still on the one that failed.
+    local slot; slot="$(current_slot)"
+    if [ -n "$slot" ] && [ -r "$BOOT_VERSION_DIR/$slot/ab-version" ]; then
+        cat "$BOOT_VERSION_DIR/$slot/ab-version"
+        return 0
+    fi
+    # Otherwise this slot is as the imager wrote it, and the build stamped its
+    # own version into the root filesystem.
     [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" && return 0
     # An image built before this file existed: fall back to something rather
     # than nothing, even though it cannot distinguish two builds of one release.
@@ -121,7 +132,7 @@ health() {
     esac
 }
 
-current_slot() { sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' /proc/cmdline 2>/dev/null; }
+current_slot() { sed -n 's/.*rauc\.slot=\([AB]\).*/\1/p' "$CMDLINE" 2>/dev/null; }
 boot_id()      { cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
 uptime_secs()  { cut -d. -f1 /proc/uptime 2>/dev/null; }
 

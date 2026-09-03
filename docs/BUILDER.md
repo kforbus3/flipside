@@ -43,6 +43,7 @@ Output lands in `./output/` (e.g. `debian-trixie-ab.img.zst`, `ubuntu-noble-ab.i
 | `--tang-url URL` | — | Tang server URL (required for `--unlock tang`) |
 | `--compress` | `zstd` | `zstd` \| `gzip` \| `none` |
 | `--output PATH` | `/output/<distro>-<suite>-ab.img` | Output path (inside the container) |
+| `--version STR` | UTC build timestamp | What this build calls itself — reported by each machine to the control plane |
 
 The flags governing writable state and customization — `--state-model`,
 `--slot-private-upper`, `--persist`, `--slot-private`, `--volatile`,
@@ -183,6 +184,44 @@ drivers in, and with them the graphics firmware this profile installs. The
 builder also checks the space before staging the per-slot copies and refuses
 with the `--boot-size` it actually needs, rather than dying on a bare
 "No space left on device" mid-copy.
+
+## What is in it: the SBOM
+
+Every build writes three files beside the image:
+
+| file | what it is |
+| --- | --- |
+| `<image>.spdx.json` | SPDX 2.3 |
+| `<image>.cdx.json` | CycloneDX 1.5 |
+| `<image>.packages.tsv` | the raw list: package, version, arch, source, source version |
+
+`make-bundle.sh` writes the same three beside each bundle, which matters more:
+an update is what *changes* what a machine is running, so an SBOM per image and
+none per bundle would describe the fleet as it was first provisioned and never
+since.
+
+The list is taken from dpkg's own database while the slot is still mounted —
+the only moment it can be read without booting the image. Packages that are
+merely `deinstall`ed (config files left behind, software gone) are excluded: an
+SBOM naming software that is not there is worse than no SBOM. A copy is left
+inside the image at `/usr/lib/flipside/packages.tsv`, so a running machine can
+answer the same question about itself.
+
+A build whose SBOM cannot be generated still produces a usable image, loudly —
+trading a real artifact for a metadata file would be the wrong way round.
+
+To find something across everything on the server, use **Find a package** on the
+Images page, or:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+     'http://localhost:8080/api/sbom?package=^openssl$&version=3.0.'
+```
+
+`package` is a regular expression; `version` is a substring, because the useful
+question is nearly always "which ones are still on 3.0.x". The answer names
+images and bundles alike, and reports how many artifacts were searched — so
+"no results" cannot be confused with "nothing had an SBOM to search".
 
 ## Customization
 

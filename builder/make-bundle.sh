@@ -67,6 +67,15 @@ case "$IMAGE" in
         ;;
 esac
 VERSION="${VERSION:-$(date -u +%Y.%m.%d-%H%M)}"
+# The version ends up in three places that all have opinions about characters: a
+# filename, RAUC's manifest, and a single-quoted assignment inside the generated
+# install hook. Constrained once, here, rather than escaped three times -- and a
+# quote in a version string would break the hook on the machine, at install
+# time, which is the worst place to find out.
+case "$VERSION" in
+    *[!A-Za-z0-9.+:~_-]*) die "--version may only contain letters, digits and . + : ~ _ - \
+(got '$VERSION')";;
+esac
 
 # --- signing key -------------------------------------------------------------
 #
@@ -206,15 +215,26 @@ if [ -n "$(ls -A "$WORK/slot/etc/cryptsetup-keys.d" 2>/dev/null)" ]; then
     log "      keep the key on the BOOT partition where an update cannot reach it."
 fi
 
-# Stamp the bundle's own version into the filesystem it is about to ship, so a
-# machine that installs it reports *this* version rather than the version of the
-# image it happened to be built from. It is the only way the control plane can
-# tell a machine that took the update from one that did not: nothing else on a
-# running system records which bundle wrote its root slot, and a rollout that
-# cannot check that can never finish. The other slot keeps its own copy, so a
-# rollback reports the version it rolled back to rather than lying about it.
-install -d -m755 "$WORK/slot/usr/lib/flipside"
-printf '%s\n' "$VERSION" > "$WORK/slot/usr/lib/flipside/version"
+# What this bundle will put on a machine. Generated from the mounted slot for
+# the same reason the image's is: this is the only moment the package list can
+# be read. It matters more here than for the image, because an update is what
+# *changes* what a machine is running -- an SBOM per image and none per bundle
+# would describe the fleet as it was first provisioned and never since.
+#
+# Written beside the bundle rather than into it. A bundle is a signed artifact
+# whose contents are covered by that signature, and adding a file to it means
+# either signing the SBOM's own hash into the manifest or shipping something the
+# signature does not cover. Beside it, alongside the .json and .sha256 sidecars
+# that are already there, is the honest place for it.
+if [ -x "$(dirname "$0")/make-sbom.sh" ]; then
+    log "Recording what this bundle installs (SBOM)"
+    OUTPUT_PRE="${OUTPUT:-/output/bundles/${COMPATIBLE}-${VERSION}.raucb}"
+    mkdir -p "$(dirname "$OUTPUT_PRE")"
+    "$(dirname "$0")/make-sbom.sh" --root "$WORK/slot" --out "$OUTPUT_PRE" \
+        --name "$(basename "${OUTPUT_PRE%.raucb}")" --version "$VERSION" \
+        --distro "${COMPATIBLE%%-*}" --arch "$(dpkg --print-architecture)" >/dev/null \
+        || log "NOTE: no SBOM was generated for this bundle; the bundle itself is fine."
+fi
 
 log "Packing the root slot (this is the slow part)"
 tar --numeric-owner --xattrs --xattrs-include='*' \
@@ -230,9 +250,17 @@ tar --numeric-owner --xattrs --xattrs-include='*' \
 # A post-install hook rather than extra-mkfs-opts in system.conf: the hook works
 # on every RAUC version, and it runs on the machine, so it labels whichever slot
 # was actually written rather than whatever the bundle guessed.
-cat > "$WORK/bundle/hook.sh" <<'HOOK'
-#!/bin/sh
-set -e
+#
+# The version is baked in here rather than written into the source slot, because
+# that slot is mounted read-only (line "mount -o ro" above) -- and a `printf >`
+# into a read-only mount fails at the moment the whole update path depends on
+# it. It could not be made writable either: the mount is the *source image*, and
+# a bundle build has no business modifying the image it was built from.
+{
+    echo '#!/bin/sh'
+    echo 'set -e'
+    printf "BUNDLE_VERSION='%s'\n" "$VERSION"
+    cat <<'HOOK'
 case "$1" in
     slot-post-install)
         case "$RAUC_SLOT_BOOTNAME" in
@@ -245,16 +273,30 @@ case "$1" in
         # The kernel for this slot, if the bundle carries one. Written under
         # /boot/<A|B>/ so only the slot just updated changes: the running slot
         # keeps the kernel it booted, which is what a rollback needs.
+        mkdir -p "/boot/$RAUC_SLOT_BOOTNAME"
         if [ -f "$RAUC_BUNDLE_MOUNT_POINT/boot.tar.gz" ]; then
-            mkdir -p "/boot/$RAUC_SLOT_BOOTNAME"
             tar -C "/boot/$RAUC_SLOT_BOOTNAME" -xzf "$RAUC_BUNDLE_MOUNT_POINT/boot.tar.gz"
             sync
             echo "installed kernel for slot $RAUC_SLOT_BOOTNAME"
         fi
+
+        # What this slot now is, beside the kernel that boots it. The control
+        # plane's whole notion of "did this machine take the update" rests on
+        # the machine being able to name the version it is running -- nothing
+        # else on a booted system records which bundle wrote its root slot, and
+        # os-release names the Debian release, which every build shares.
+        #
+        # Per-slot, under /boot, for the same reason the kernel is: a rollback
+        # lands on the other slot, which keeps its own file, so the machine
+        # reports the version it actually rolled back to instead of insisting it
+        # is still on the one that failed.
+        printf '%s\n' "$BUNDLE_VERSION" > "/boot/$RAUC_SLOT_BOOTNAME/ab-version"
+        sync
         ;;
 esac
 exit 0
 HOOK
+} > "$WORK/bundle/hook.sh"
 chmod +x "$WORK/bundle/hook.sh"
 
 cat > "$WORK/bundle/manifest.raucm" <<EOF

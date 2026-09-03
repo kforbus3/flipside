@@ -1484,6 +1484,27 @@ chroot "$MNT" grub-editenv /boot/grub/grubenv create
 chroot "$MNT" grub-editenv /boot/grub/grubenv set ORDER="A B" \
     A_TRY=0 B_TRY=0 A_OK=1 B_OK=1 A_PROVEN=1 B_PROVEN=1
 
+# Read while the slot is still mounted -- the only moment the package list can
+# be taken without booting the image or mounting it again. Written against $RAW
+# because $OUT is not decided until after compression; the sidecars are renamed
+# to match below. The copy this leaves inside the root filesystem is picked up
+# by the slot sync just below, so both slots carry it.
+step "Recording what is in this image (SBOM)"
+SBOM_PACKAGES=0
+if [ -x "$(dirname "$0")/make-sbom.sh" ]; then
+    SBOM_PACKAGES="$("$(dirname "$0")/make-sbom.sh" --root "$MNT" --out "$RAW" \
+        --name "$(basename "${RAW%.img}")" --version "$IMAGE_VERSION" \
+        --distro "$DISTRO" --suite "$SUITE" --arch "$ARCH" | tail -1)" || {
+        # An image is still a perfectly good image without an SBOM beside it,
+        # and failing the build here would trade a real artifact for a metadata
+        # file. It is loud, though: an SBOM nobody notices is missing is the
+        # same as one that was never asked for.
+        warn "could not generate an SBOM for this image; it is built and usable,"
+        warn "but nothing records what is inside it."
+        SBOM_PACKAGES=0
+    }
+fi
+
 step "Syncing root slot A -> slot B"
 umount "$MNT/dev/pts" "$MNT/dev" "$MNT/proc" "$MNT/sys"
 umount "$MNT/var/lib/overlay"
@@ -1511,6 +1532,15 @@ case "$COMPRESS" in
 esac
 
 step "Writing SHA256 checksum and metadata sidecars"
+# The SBOM was written beside $RAW before the slot was unmounted; compression
+# renamed the image out from under it. Move the three files rather than
+# regenerate them -- the filesystem they describe no longer exists in a form
+# anything can read.
+if [ "$OUT" != "$RAW" ]; then
+    for ext in spdx.json cdx.json packages.tsv; do
+        [ -f "${RAW}.${ext}" ] && mv "${RAW}.${ext}" "${OUT}.${ext}"
+    done
+fi
 ( cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 cat > "${OUT}.json" <<EOF
 {
@@ -1529,6 +1559,8 @@ cat > "${OUT}.json" <<EOF
   "slot_private_upper": $([ "$UPPER_MODE" = per-slot ] && echo true || echo false),
   "encrypted": $ENCRYPT,
   "update_keyring_sha256": "$KEYRING_FP",
+  "packages": $SBOM_PACKAGES,
+  "sbom": "$([ "$SBOM_PACKAGES" -gt 0 ] && echo "spdx+cyclonedx" || echo none)",
   "unlock": "$([ "$ENCRYPT" = true ] && echo "$UNLOCK" || echo none)",
   "compress": "$COMPRESS",
   "created": "$(date -u +%FT%TZ)"

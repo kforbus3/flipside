@@ -270,11 +270,25 @@ IFS=: read -r mj mn < "/sys/class/block/${BB}p3/dev"
 rm -f "/dev/${BB}p3"; mknod "/dev/${BB}p3" b "$mj" "$mn"
 mkdir -p /mnt/bootchk && mount "/dev/${BB}p3" /mnt/bootchk
 ksize=$(stat -c %s /mnt/bootchk/B/vmlinuz 2>/dev/null || echo 0)
+# The version stamp the same hook writes, read from the disk for the same reason
+# as the kernel. This is what the fleet agent reports, and it is the entire
+# basis on which a rollout decides whether a machine took the update: without
+# it every machine keeps reporting the version it was imaged with, every rollout
+# runs forever, and nothing anywhere says why.
+bver=$(cat /mnt/bootchk/B/ab-version 2>/dev/null || echo "")
 umount /mnt/bootchk; losetup -d "$LO"
 if [ "$ksize" -gt 1000000 ]; then
     echo "  slot B kernel restored by the update: $ksize bytes"
 else
     echo "  FAIL: slot B's kernel was not replaced (size $ksize)"; ok=0
+fi
+if [ -n "$bver" ]; then
+    echo "  slot B stamped with bundle version: $bver"
+else
+    echo "  FAIL: slot B has no /boot/B/ab-version — the agent cannot tell the"
+    echo "        control plane which version this machine took, so any rollout"
+    echo "        containing it would never finish"
+    ok=0
 fi
 grep -qa "ab-mark-good" "$AFTER" || echo "  WARN: ab-mark-good did not run in slot B"
 if [ "$ok" = 1 ]; then
