@@ -4,7 +4,7 @@
 #   ab-agent                     # one check-in (what the timer runs)
 #   ab-agent --status            # what this machine would report, and to where
 #   ab-agent --set-server URL    # point this machine at a different server
-#   ab-agent --now               # check in and act immediately, ignoring nothing
+#   ab-agent --now               # check in even if ENABLED=0 in the config
 #
 # This is the machine's half of fleet management, and it is a poll rather than
 # anything the server can initiate. The reason is the deployment, not taste: a

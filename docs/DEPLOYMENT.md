@@ -279,9 +279,19 @@ make webui-down && make webui
 make server-down && make server-up
 ```
 
-The API restore does this for you — it drops the in-memory caches, which
-otherwise keep the UI showing the state that was just replaced and make a
-successful restore look like one that did nothing.
+The API restore drops the in-memory data caches for you — without that the UI
+keeps showing the state that was just replaced, and a successful restore looks
+like one that did nothing. Two things it cannot do from inside the running
+process:
+
+- **The `.env` files are written but not re-read.** Settings are loaded at
+  startup, so a restored `SECRET_KEY`, OIDC configuration, `CONTROL_URL` or
+  audit-forwarding target takes effect on the next restart.
+- **Files added since the backup are left alone.** A restore puts back what the
+  archive contains; it does not delete what the archive does not mention. That
+  is deliberate — deleting files nobody asked about is the worse mistake — but
+  it means restoring an old backup onto a live server leaves newer state (a
+  rollout created since, say) in place beside the old.
 
 ### Disaster recovery, from nothing
 

@@ -107,4 +107,14 @@ async def restore(request: Request, file: UploadFile = File(...),
         "note": ("Sessions and users came from the archive. If the backup "
                  "predates your account or your current password, log in with "
                  "the credentials that were current when it was taken."),
+        # Two things a restore cannot do from inside the running process, said
+        # here rather than left to be discovered:
+        "caveats": [
+            "The .env files were written to disk but this process read its "
+            "settings at startup, so anything in them — SECRET_KEY, OIDC, "
+            "CONTROL_URL, audit forwarding — takes effect on the next restart.",
+            "Files added since the backup was taken are left in place. A "
+            "restore puts back what the archive contains; it does not delete "
+            "what it does not mention.",
+        ],
     }
