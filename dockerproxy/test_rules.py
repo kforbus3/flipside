@@ -53,6 +53,12 @@ for method, path in [
     ("POST", "/session"), ("POST", "/grpc"),
     ("GET", "/containers/json?all=1"), ("GET", "/images/json"),
     ("POST", "/networks/create"), ("POST", "/networks/abc/connect"),
+    # Attach is allowed: `docker run` in the foreground streams a container's
+    # output through it, and every build here is a foreground run whose output
+    # becomes the job log. Exec is not, and that is the distinction that
+    # matters -- attach connects to a container's existing stdio, exec starts a
+    # new process of the caller's choosing inside any container on the host.
+    ("POST", "/containers/abc/attach?stream=1&stdout=1"),
 ]:
     check(f"{method} {path}", proxy.allowed(method, path))
 
@@ -61,7 +67,6 @@ for method, path in [
     # Each of these is a documented container escape when the socket is raw.
     ("POST", "/containers/other/exec"),
     ("POST", "/exec/abc/start"),
-    ("POST", "/containers/other/attach?stream=1&stdin=1"),
     ("POST", "/images/create?fromImage=attacker/image"),
     ("POST", "/commit?container=other&repo=exfil"),
     ("POST", "/images/x/push"),

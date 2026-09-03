@@ -12,6 +12,9 @@ This sits in front of it and passes an allowlist: the container lifecycle calls
 the orchestrator makes, image builds, and nothing else. Requests are logged, so
 what the UI asks the daemon to do is finally visible.
 
+Every request is checked, including the second one on a kept-alive connection --
+see Handler, where that is the whole design.
+
 **What this does not fix, stated plainly.** The image builder must run
 privileged -- it attaches loop devices, mounts filesystems and runs debootstrap
 -- and a privileged container can reach the host kernel however it likes. So
@@ -67,7 +70,6 @@ log = logging.getLogger("dockerproxy")
 #
 # Deliberately absent, and each for a reason:
 #   /containers/{id}/exec, /exec/*      running a command in any container
-#   /containers/{id}/attach             the same, over a hijacked connection
 #   /images/create                      pulling an arbitrary image from anywhere
 #   /commit, /push                      exfiltrating a container as an image
 #   /volumes, /networks (write)         reshaping what other containers can see
@@ -90,6 +92,15 @@ RULES: list[tuple[str, re.Pattern[str]]] = [
     ("POST",   re.compile(r"^/(v[\d.]+/)?containers/[\w.\-]+/wait$")),
     ("POST",   re.compile(r"^/(v[\d.]+/)?containers/[\w.\-]+/restart$")),
     ("GET",    re.compile(r"^/(v[\d.]+/)?containers/[\w.\-]+/logs$")),
+    # Attach, which is how `docker run` in the foreground streams a container's
+    # output -- and every build this project runs is a foreground `docker run`
+    # whose output becomes the job log. Denying it does not harden anything
+    # useful; it just means builds produce no output.
+    #
+    # Not the same thing as exec, which stays denied. Attach connects to a
+    # container's existing stdio; exec starts a new process of the caller's
+    # choosing inside any container on the host. The second is the escape.
+    ("POST",   re.compile(r"^/(v[\d.]+/)?containers/[\w.\-]+/attach$")),
     ("DELETE", re.compile(r"^/(v[\d.]+/)?containers/[\w.\-]+$")),
 
     # Images: build them, list them, and remove the ones we built.
