@@ -176,14 +176,19 @@ class Rollouts:
     def _machine(self, rec: dict[str, Any], ident: str) -> dict[str, Any]:
         return rec["machines"].setdefault(ident, {"state": "pending", "attempts": 0})
 
-    def _sweep_timeouts(self, rec: dict[str, Any], now: float) -> None:
+    def _sweep_timeouts(self, rec: dict[str, Any], now: float) -> bool:
         """Return abandoned offers to the pool so a rollout cannot wedge.
 
         Called on every evaluation rather than on a timer, for the same reason
         the rest of this has no scheduler: the only moment the answer matters is
         when a machine is asking, and at that moment it is cheap to work out.
+
+        Returns whether anything moved, because the caller only writes the file
+        when something did -- and a sweep that silently mutated the record
+        without saying so would be undone by the next read from disk.
         """
-        for ident, m in rec["machines"].items():
+        changed = False
+        for _ident, m in rec["machines"].items():
             if m.get("state") not in IN_FLIGHT:
                 continue
             if now - m.get("at", now) < OFFER_TIMEOUT_SECONDS:
@@ -195,6 +200,8 @@ class Rollouts:
             else:
                 m["state"] = "pending"
             m["at"] = now
+            changed = True
+        return changed
 
     def _failures(self, rec: dict[str, Any]) -> int:
         return sum(1 for m in rec["machines"].values() if m.get("state") == "failed")
@@ -212,14 +219,23 @@ class Rollouts:
             # a failed canary means the batch phase is never reached at all.
             return max(0, canary - in_flight)
 
-        if canary and verified:
+        soak = int(strategy.get("soak_seconds", 0))
+        if canary and soak:
             # The soak: the canaries have to have been up for a while before the
             # rest of the fleet follows them. An update that bricks a machine
             # ten minutes in is still a bricked machine, and without this the
             # whole fleet would already have it.
-            newest_canary = max(m.get("at", 0) for m in verified)
-            soak = int(strategy.get("soak_seconds", 0))
-            if now - newest_canary < soak:
+            #
+            # Timed from the moment the canary phase finished, recorded once.
+            # Timing it from the newest verified machine instead -- which is
+            # what this did first -- keeps re-arming as the batches verify, so
+            # every batch soaks too: five hundred machines in tens with a
+            # fifteen-minute soak becomes twelve hours rather than the "prove
+            # it, then go" the flag is documented and drawn as.
+            done_at = rec.get("canary_done_at")
+            if not done_at:
+                return 0
+            if now - done_at < soak:
                 return 0
 
         return max(0, int(strategy.get("batch_size", 1)) - in_flight)
@@ -271,10 +287,21 @@ class Rollouts:
             m = self._machine(rec, ident)
             changed = self._apply_report(rec, m, ident, reported, now)
 
+            # The moment the canary phase finished, stamped once. The soak is
+            # measured from here rather than from whichever machine verified
+            # most recently -- see _capacity.
+            canary = max(0, int(rec["strategy"].get("canary", 0)))
+            if canary and not rec.get("canary_done_at"):
+                verified = sum(1 for x in rec["machines"].values()
+                               if x.get("state") == "verified")
+                if verified >= canary:
+                    rec["canary_done_at"] = now
+                    changed = True
+
             action = None
             if rec["state"] == "running" and m["state"] == "pending" \
                     and not fleet.host(ident).get("paused"):
-                self._sweep_timeouts(rec, now)
+                changed = self._sweep_timeouts(rec, now) or changed
                 if self._in_window(rec, now) and self._capacity(rec, now) > 0:
                     m["state"] = "offered"
                     m["at"] = now

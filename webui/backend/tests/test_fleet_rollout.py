@@ -224,13 +224,47 @@ rest = [h for h in ("s1", "s2", "s3") if h != canary]
 check("but nothing else starts during the soak",
       all(beat(h).get("action") == "none" for h in rest),
       rollout(SID)["counts"])
-# Reach in and age the canary past the soak. The alternative is a test that
-# sleeps for an hour, and a soak nobody can test is a soak nobody trusts.
+# Reach in and age the moment the canary phase finished. The alternative is a
+# test that sleeps for an hour, and a soak nobody can test is a soak nobody
+# trusts.
 rec = rollouts_mod.rollouts.get(SID)
-rec["machines"][canary]["at"] -= 7200
+check("the end of the canary phase is stamped", bool(rec.get("canary_done_at")), rec.keys())
+rec["canary_done_at"] -= 7200
 check("once the soak has elapsed the batch proceeds",
       all(beat(h).get("action") == "update" for h in rest),
       rollout(SID)["counts"])
+
+print("== but the soak is a canary gate, not a delay between every batch ==")
+# Timing the soak from whichever machine verified most recently re-arms it as
+# each batch lands, so every batch soaks too -- five hundred machines in tens
+# with a fifteen-minute soak becomes twelve hours instead of the "prove it,
+# then go" the flag is documented and drawn as.
+#
+# batch_size 1 makes the batches strictly sequential, so if the soak were
+# re-arming, the second machine would verify and the third would be held.
+fleet.reload()
+rollouts_mod.rollouts.reload()
+seq = ["q1", "q2", "q3", "q4"]
+for host in seq:
+    beat(host)
+    client.put(f"/api/fleet/hosts/{host}", json={"groups": ["seq"]}, headers=AUTH)
+r = client.post("/api/rollouts", json={
+    "bundle": "flipside-2.0.raucb", "groups": ["seq"],
+    "strategy": {"canary": 1, "batch_size": 1, "soak_seconds": 3600, "max_failures": 9},
+}, headers=AUTH)
+QID = r.json()["id"]
+first = next(h for h in seq if beat(h).get("action") == "update")
+beat(first, version="2.0", state="installed")
+rollouts_mod.rollouts.get(QID)["canary_done_at"] -= 7200      # the soak elapses once
+done = [first]
+for _ in range(3):
+    nxt = next((h for h in seq if h not in done and beat(h).get("action") == "update"), None)
+    if nxt is None:
+        break
+    beat(nxt, version="2.0", state="installed")
+    done.append(nxt)
+check("every machine after the canary follows without soaking again",
+      len(done) == 4, (done, rollout(QID)["counts"]))
 
 print("== a held machine is skipped without holding up the rollout ==")
 fleet.reload()

@@ -329,6 +329,13 @@ machine — an agent cannot put itself in one. Set them on the Fleet page. Targe
 resolve **live**, so a machine imaged into `prod` today is picked up by a rollout
 that started yesterday and has not finished.
 
+**A rollout that has finished does not pick up machines added afterwards.** It
+completes when every machine it covers is verified, failed or held, and a
+machine that joins the group later is left on whatever it was imaged with. A
+rollout is a transition, not a standing policy; if it were the latter it could
+never finish. Roll out again, or image new machines from the version you want
+them on.
+
 ### How a rollout advances
 
 Create one on the **Rollouts** page: a bundle, a target, and a strategy.
