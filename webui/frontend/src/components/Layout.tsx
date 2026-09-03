@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Hammer, HardDrive, ListChecks, Network, LogOut, Boxes, MonitorSmartphone, Server, Package, Rocket, KeyRound, FolderCog, Users, KeySquare, Fingerprint, ScrollText } from "lucide-react";
+import { LayoutDashboard, Hammer, HardDrive, ListChecks, Network, LogOut, Boxes, MonitorSmartphone, Server, Package, Rocket, KeyRound, FolderCog, Users, KeySquare, Fingerprint, ScrollText, Archive } from "lucide-react";
 import { useAuth, roleAtLeast, Role } from "../lib/auth";
 import { api } from "../lib/api";
 
@@ -25,6 +25,7 @@ const ADMIN_NAV: { to: string; label: string; icon: any }[] = [
   { to: "/tokens", label: "API Tokens", icon: KeySquare },
   { to: "/sessions", label: "Sessions", icon: Fingerprint },
   { to: "/audit", label: "Audit Log", icon: ScrollText },
+  { to: "/backup", label: "Backup", icon: Archive },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

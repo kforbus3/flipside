@@ -120,6 +120,15 @@ server-logs: ## Follow provisioning server logs
 .PHONY: all
 all: image imager ## Build both the A/B image and the imager
 
+.PHONY: backup
+backup: ## Back up everything this server cannot rebuild (FILE=path optional)
+	@./scripts/flipside-backup.sh backup $(FILE)
+
+.PHONY: restore
+restore: ## Restore from a backup (FILE=path required)
+	@test -n "$(FILE)" || { echo "usage: make restore FILE=flipside-backup-....tar.gz"; exit 1; }
+	@./scripts/flipside-backup.sh restore $(FILE)
+
 .PHONY: clean
 clean: ## Remove build artifacts (keeps output/rauc-keys — the update signing key)
 	@if [ -d $(OUTPUT) ]; then \

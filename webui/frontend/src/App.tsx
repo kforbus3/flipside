@@ -18,6 +18,7 @@ import UsersPage from "./pages/Users";
 import Tokens from "./pages/Tokens";
 import Sessions from "./pages/Sessions";
 import Audit from "./pages/Audit";
+import Backup from "./pages/Backup";
 
 function Protected({ children, admin }: { children: JSX.Element; admin?: boolean }) {
   const { authed, loading, isAdmin } = useAuth();
@@ -48,6 +49,7 @@ export default function App() {
       <Route path="/tokens" element={<Protected admin><Tokens /></Protected>} />
       <Route path="/sessions" element={<Protected admin><Sessions /></Protected>} />
       <Route path="/audit" element={<Protected admin><Audit /></Protected>} />
+      <Route path="/backup" element={<Protected admin><Backup /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

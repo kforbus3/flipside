@@ -226,23 +226,84 @@ containers is required for a new image — only when `IMAGE_FILE` changes.
 
 ## Backing up the server
 
-Most of `output/` is rebuildable. What is not fits in a few kilobytes:
+```bash
+make backup                      # writes flipside-backup-<date>.tar.gz
+make restore FILE=flipside-backup-20260902-120000.tar.gz
+```
 
-- **`output/rauc-keys/`** — the update signing key. This is the one that
-  matters: RAUC installs a bundle only if it is signed by the certificate
-  already inside the image, so losing `key.pem` means **no further updates for
-  any machine already deployed**, permanently — the update is the thing they
-  will not accept. See
-  [UPDATES.md](UPDATES.md#the-signing-key-and-why-order-matters).
-- **`output/hosts/assignments.json`** — the per-machine image, hostname and
-  action assignments.
-- **`output/deployments.jsonl`** — the fleet record: every machine this server
-  has imaged and what it reported back.
-- **`output/.secrets-store.json`** — the secrets-manager configuration,
-  including its token. Mode 0600; keep the backup as private as the file.
-- **`server/.env` and `webui/.env`** — the server and UI configuration
-  (passwords and secrets included).
+or **Backup** in the web UI (admin only), which does the same thing over the
+API and shows what a backup would contain before you take one.
 
-The images themselves (`output/*.img*`) do not need backing up — they are
-rebuilt from the repository. Restoring is putting the files back in place
-before `make server-up` and starting the web UI; nothing else holds state.
+### What is in it
+
+Everything this server cannot rebuild, and nothing it can. Images and bundles
+are deliberately excluded: they are gigabytes and they come back from the
+repository, which is the difference that decides what belongs in a backup.
+
+| | why losing it matters |
+| --- | --- |
+| `output/rauc-keys/` | **The one that matters.** RAUC installs a bundle only if it is signed by the certificate already inside the image, so losing `key.pem` means **no machine already deployed can ever be updated again**, permanently. |
+| `output/users.json` | accounts, roles, password hashes |
+| `output/.sessions.json`, `.api-tokens.json` | live credentials — restoring them keeps automation working across a rebuild |
+| `output/fleet/` | group membership, live machine state, rollouts. Group membership exists nowhere else and is somebody's deliberate work |
+| `output/hosts/assignments.json` | per-machine image, hostname and action |
+| `output/deployments.jsonl` | what was imaged, and whether it came back |
+| `output/audit.jsonl` | who did what |
+| `output/.secrets-store.json` | secrets-manager address and token |
+| `server/.env`, `webui/.env` | server and UI configuration, secrets included |
+
+### Treat the file as the signing key
+
+Because it contains it, along with every password hash and live token on the
+server. It is written `0600` and is **not encrypted** — put it somewhere that
+encrypts at rest. Losing it means the fleet can never be updated again; leaking
+it means anyone can sign an update the fleet will install.
+
+### Restoring
+
+The archive is verified in full — every file against its recorded checksum —
+before anything is written, so a damaged backup changes nothing rather than
+leaving the server holding half of one state and half of another. The current
+state is copied aside first; the response names where.
+
+A restore replaces the user database, which may include the account doing the
+restoring. If the backup predates your account or your current password, log in
+with the credentials that were current when it was taken. It also replaces the
+audit log, so entries written since the backup are gone.
+
+Restart both stacks afterwards if you restored from the shell, so nothing keeps
+serving what was just replaced:
+
+```bash
+make webui-down && make webui
+make server-down && make server-up
+```
+
+The API restore does this for you — it drops the in-memory caches, which
+otherwise keep the UI showing the state that was just replaced and make a
+successful restore look like one that did nothing.
+
+### Disaster recovery, from nothing
+
+On a new machine with only the repository and a backup file:
+
+```bash
+git clone https://github.com/kforbus3/flipside.git && cd flipside
+./scripts/flipside-backup.sh restore /path/to/flipside-backup-....tar.gz
+make webui                       # reads webui/.env from the archive
+make server-up                   # reads server/.env from the archive
+make image                       # rebuild whatever images you need
+```
+
+The shell script exists for exactly this: it does not need the web UI, a
+database, or anything the API depends on. A recovery procedure that requires the
+thing being recovered is not one.
+
+Two things to check afterwards, because both fail quietly:
+
+1. `output/rauc-keys/cert.pem`'s fingerprint must match what deployed machines
+   carry — compare with `update_keyring_sha256` in any image sidecar. If it does
+   not, those machines will refuse every bundle this server signs.
+2. `CONTROL_URL` must still be reachable from where the fleet lives. Machines
+   check in on their own and will move to a new address if this one advertises
+   it, but only once they can reach it at all.
