@@ -104,6 +104,48 @@ async def heartbeat(request: Request):
     return _kv(out)
 
 
+@router.post("/fleet/report")
+async def report(request: Request, body: dict = Body(...),
+                 principal: Principal = Depends(require_operator)):
+    """A report about a machine from something that observed it directly.
+
+    The heartbeat above is a machine describing itself. This is a *different*
+    claim: an operator-authenticated system saying "I reached that host and this
+    is what is on it". Moorgate uses it for machines it can reach and this
+    server cannot — a site with no route back, where the machine installs an
+    update perfectly and then has nowhere to say so, and the rollout would wait
+    forever for a check-in that cannot happen.
+
+    Deliberately not the same endpoint, and deliberately not something a machine
+    can call. Two properties follow from that:
+
+      - it needs an operator token, so a machine on the provisioning network
+        cannot use it to claim anything about another machine;
+      - every report records who made it, so the fleet's history distinguishes
+        "the machine said so" from "Moorgate looked", which is a real difference
+        in the strength of the evidence and in who to ask when it is wrong.
+    """
+    ident = _clean(str(body.get("id") or ""), 128)
+    if not ident:
+        raise HTTPException(400, "id is required")
+    observed = _clean(str(body.get("observed_by") or "")) or principal.name
+    fields = {k: _clean(str(body.get(k) or "")) for k in
+              ("version", "health", "slot", "update_state", "update_error")}
+    if not fields["version"]:
+        raise HTTPException(400, "a report with no version says nothing a rollout can use")
+    fields["reported_by"] = observed
+    fields["report_source"] = "observed"
+    fleet.heartbeat(ident, **fields)
+    action = rollouts.evaluate(ident, fields)
+    request.state.audit_summary = (
+        f"observed {ident} running {fields['version']} ({fields['health'] or 'ok'})")
+    return {"ok": True, "machine": ident,
+            # Whatever the rollout would have told the machine, so the caller
+            # can act on it rather than having to ask again.
+            "action": (action or {}).get("type", "none"),
+            "bundle_url": (action or {}).get("bundle_url", "")}
+
+
 @router.get("/fleet")
 async def list_fleet(_: Principal = Depends(require_viewer)):
     """Every machine, live state merged with what it was imaged with."""
