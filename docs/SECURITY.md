@@ -153,7 +153,7 @@ Two things to be deliberate about:
 
 Revealing a stored passphrase from the UI is deliberately one click: the moment
 you need it is a machine stopped at an initramfs prompt. It is no wider than the
-session already is — this UI drives the Docker socket, which is root on the host.
+session already is — this UI drives container builds, and the image builder runs privileged, so starting a build reaches host root regardless of the Docker API proxy in front of it (see WEBUI.md, "The Docker socket").
 
 On the command line, `scripts/luks-secret.sh` does the same job against the
 `bao`/`vault` CLI and writes the same payload, so an image built either way is

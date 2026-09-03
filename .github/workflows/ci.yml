@@ -160,6 +160,23 @@ jobs:
           # exactly like a working UI.
           python tests/test_identity.py
 
+      - name: The Docker proxy refuses the ways out of a container
+        run: |
+          # Decisions only — no daemon needed, so a rule loosened to make a
+          # build work again is caught anywhere. Every case is an escape that
+          # works when the socket is raw: exec into another container, an
+          # arbitrary image, / bind-mounted, the socket itself passed on.
+          python3 dockerproxy/test_rules.py
+
+      - name: ...and a real daemon still does everything the builder needs
+        run: |
+          # The other half, and the likelier failure: an allowlist that is too
+          # tight breaks builds with a bare "403" from the docker CLI that names
+          # neither the call nor the reason. This drives a real daemon through
+          # the proxy — build, run, run privileged, bind the project — and then
+          # tries the escapes against it for real.
+          ./scripts/test-docker-proxy.sh
+
       - name: Metrics, structured logs, and shipping the audit trail
         working-directory: webui/backend
         run: |

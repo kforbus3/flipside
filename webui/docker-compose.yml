@@ -6,7 +6,38 @@
 # Docker socket; it discovers the repo's host-side path from its own mount, so no
 # path configuration is needed. HOST_PROJECT_DIR only overrides that discovery —
 # set it in webui/.env if you run compose from somewhere else.
+#
+# The UI does NOT hold the Docker socket. It talks to the proxy below, which
+# passes an allowlist of the calls this project actually makes and refuses the
+# rest — `exec` into other containers, arbitrary images, host bind mounts. See
+# ../dockerproxy/proxy.py, which is short and is meant to be read.
+#
+# To go back to the raw socket (if the allowlist ever refuses something a build
+# legitimately needs — please open an issue if so), set in webui/.env:
+#   DOCKER_HOST=unix:///var/run/docker.sock
+# and mount the socket into the webui service.
 services:
+  dockerproxy:
+    build: ../dockerproxy
+    image: debian-ab-dockerproxy
+    container_name: debian-ab-dockerproxy
+    restart: unless-stopped
+    environment:
+      # Where the project lives on the host, which bounds what may be
+      # bind-mounted into a build. Left empty it is discovered from the webui
+      # container's own /project mount, so the two cannot disagree.
+      - HOST_PROJECT_DIR=${HOST_PROJECT_DIR:-}
+      - LOG_LEVEL=${PROXY_LOG_LEVEL:-INFO}
+    volumes:
+      # Not :ro. A read-only bind of a unix socket restricts nothing about what
+      # can be done through it — the confinement is the allowlist in the proxy,
+      # and pretending otherwise would be decoration.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dockerproxy:/shared
+    # It connects to one socket and listens on another. Nothing else.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
   webui:
     build: .
     image: debian-ab-webui
@@ -47,6 +78,15 @@ services:
       - AUDIT_SYSLOG_HOSTNAME=${AUDIT_SYSLOG_HOSTNAME:-}
       - AUDIT_HTTP_URL=${AUDIT_HTTP_URL:-}
       - AUDIT_HTTP_TOKEN=${AUDIT_HTTP_TOKEN:-}
+      # The allowlisting proxy, not the daemon. Override in webui/.env only to
+      # fall back to the raw socket.
+      - DOCKER_HOST=${DOCKER_HOST:-unix:///shared/docker.sock}
+    depends_on:
+      - dockerproxy
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - dockerproxy:/shared
       - ${HOST_PROJECT_DIR:-..}:/project
+
+volumes:
+  # Carries only the proxy's listening socket between the two containers.
+  dockerproxy:

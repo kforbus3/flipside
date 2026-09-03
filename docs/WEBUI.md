@@ -3,7 +3,7 @@
 A browser-based control panel that ties the whole system together — build images,
 manage the image library, configure and run the provisioning server, and **watch
 machines get imaged live**. It orchestrates the builder/imager/server containers
-through the Docker socket.
+through an allowlisting Docker API proxy.
 
 ## Features
 
@@ -432,8 +432,53 @@ npm run dev
 
 ## Security note
 
-The UI container mounts the Docker socket, which is equivalent to root on the
-host. Restrict access to the UI (strong passwords, least-role accounts, trusted
+### The Docker socket
+
+The UI does not hold the Docker socket. It talks to a small allowlisting proxy
+(`dockerproxy/proxy.py`, about three hundred lines with no dependencies, meant
+to be read) which passes the container-lifecycle and build calls this project
+makes and refuses everything else:
+
+| refused | what it would otherwise be |
+| --- | --- |
+| `exec`, `attach` | a shell in any container on the host |
+| `images/create` | pulling and running an arbitrary image |
+| `commit`, `push` | exfiltrating a container as an image |
+| binds outside the project | reading or writing any host path |
+| the Docker socket as a bind | handing a container everything above |
+| `Privileged` on any image but the builder/imager | host root |
+| `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode` = `host` | escaping the namespace |
+| swarm secrets, configs, plugins | cluster credentials, daemon code loading |
+
+Every decision is logged, so what the UI asks the daemon to do is visible:
+
+```bash
+docker logs debian-ab-dockerproxy
+```
+
+**What this does not fix.** The image builder *must* run privileged — it
+attaches loop devices, mounts filesystems and runs debootstrap — and a
+privileged container can reach the host kernel however it likes. So anyone who
+can **start a build** can still reach host root, and no proxy can change that.
+What the allowlist removes is everything else: reaching into unrelated
+containers on the same host, running arbitrary images, mounting host paths, and
+enumerating what else the host is running.
+
+The practical consequences:
+
+- **Treat the operator role as host-root-equivalent.** Give it out accordingly.
+- **Give Flipside its own host.** Do not run it beside workloads that matter;
+  the proxy narrows what a compromise reaches, it does not contain it.
+
+If the allowlist ever refuses something a build legitimately needs, the failure
+looks like a bare `403` from the docker CLI. `docker logs
+debian-ab-dockerproxy` names the call. Set `DOCKER_HOST=unix:///var/run/docker.sock`
+in `webui/.env` and mount the socket into the `webui` service to fall back to
+the old behaviour while you report it.
+
+### The rest
+
+Restrict access to the UI (strong passwords, least-role accounts, trusted
 network only, ideally behind a TLS reverse proxy).
 
 The smallest working TLS front is [Caddy](https://caddyserver.com/), which
@@ -448,5 +493,5 @@ webui.example.com {
 If the host has several networks, also bind the compose port to the management
 interface rather than every address — in `webui/docker-compose.yml`, publish
 `<management IP>:8080:8080` instead of `8080:8080` — so the UI (and the login
-form in front of the Docker socket) is not reachable from the imaging segment
-or anywhere else it has no business being.
+form in front of it) is not reachable from the imaging segment or anywhere else
+it has no business being.
