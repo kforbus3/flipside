@@ -708,7 +708,7 @@ jobs:
           grep -q "failed: 0" sm-perslot.log \
             || { echo "::error::the per-slot upper layer did not behave as its manifest describes"; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: boot-logs
