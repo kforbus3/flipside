@@ -27,7 +27,7 @@ jobs:
     name: Static checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Shell syntax
         run: |
@@ -439,7 +439,7 @@ jobs:
     # were written off as mystery cancellations before the number was found.
     timeout-minutes: 210
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Make room on the runner
         run: |
