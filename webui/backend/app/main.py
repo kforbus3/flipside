@@ -30,8 +30,16 @@ app = FastAPI(title="Flipside UI", version=__version__)
 # record themselves with the attempted username — the middleware only ever
 # sees "anonymous 401" (and for the SSO exchange, the OIDC callback already
 # wrote the real login line).
-_UNAUDITED = {"/api/imaging/report", "/api/imaging/checkin", "/api/auth/login",
-              "/api/auth/oidc/exchange"}
+#
+# The agent heartbeat is the load-bearing exclusion now. It is not an occasional
+# machine event like the imaging pair: five hundred machines on a five-minute
+# timer is a hundred and forty thousand rows a day, and the audit log is bounded
+# and trimmed oldest-first — so auditing it would quietly evict every record of
+# what people did, which is the only thing the log is for. What an operator did
+# to the fleet is audited where it happens (/api/rollouts, /api/fleet/hosts);
+# what a machine said about itself is fleet state, and lives in state.json.
+_UNAUDITED ={"/api/imaging/report", "/api/imaging/checkin", "/api/auth/login",
+              "/api/auth/oidc/exchange", "/api/fleet/heartbeat"}
 
 
 @app.middleware("http")

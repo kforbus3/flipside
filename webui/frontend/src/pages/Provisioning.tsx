@@ -228,6 +228,46 @@ export default function Provisioning() {
               )}
             </div>
           )}
+          {/* Not under "advanced": everything above configures the network a
+              machine is on for twenty minutes, and this configures the one it
+              spends the rest of its life on. Left unset, a machine reports back
+              to the provisioning address it was imaged from — which it can no
+              longer reach the moment it is unracked — and simply never appears
+              in the fleet again, with nothing anywhere saying so. */}
+          <div className="mt-5 border-t border-zinc-800 pt-4">
+            <h3 className="text-xs font-semibold uppercase text-zinc-400">
+              Where the fleet reaches this server afterwards
+            </h3>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <Label>Control-plane URL</Label>
+                <Input value={cfg.CONTROL_URL || ""} placeholder="https://flipside.example.com"
+                       onChange={(e) => set("CONTROL_URL", e.target.value)} />
+                <p className="mt-1 text-xs text-zinc-500">
+                  An address machines can reach from where they actually live. It is
+                  written onto each machine while imaging, and advertised in every
+                  check-in reply — so changing it here moves the whole existing fleet
+                  without touching a machine.
+                </p>
+              </div>
+              <div>
+                <Label>Publish bundles on (optional)</Label>
+                <Input value={cfg.UPDATE_IP || ""} placeholder="LAN address, or 0.0.0.0"
+                       onChange={(e) => set("UPDATE_IP", e.target.value)} />
+              </div>
+              <div>
+                <Label>Port</Label>
+                <Input value={cfg.UPDATE_PORT || ""} placeholder="80"
+                       onChange={(e) => set("UPDATE_PORT", e.target.value)} />
+              </div>
+              <p className="col-span-2 text-xs text-zinc-500">
+                The imaging listener is bound to the provisioning address alone, so
+                nothing it serves is reachable from the LAN. This adds a second
+                listener that serves update bundles and the check-in endpoint, and
+                nothing else.
+              </p>
+            </div>
+          </div>
           <Button className="mt-4" loading={busy} disabled={!isAdmin} title={isAdmin ? undefined : "Server configuration is admin only"} onClick={save}><Save size={14} /> Save configuration</Button>
         </Card>
 

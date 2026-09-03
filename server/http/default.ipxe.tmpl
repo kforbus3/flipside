@@ -16,7 +16,7 @@ echo
 # needing to know or care what is on the network.
 iseq ${buildarch} arm64 && set imgdir imager/arm64 || set imgdir imager
 
-kernel http://${SERVER_IP}/${imgdir}/vmlinuz imager.url=http://${SERVER_IP}/images/${IMAGE_FILE} imager.action=${ACTION} imager.compress=auto console=tty0 console=ttyS0,115200 || goto noimager
+kernel http://${SERVER_IP}/${imgdir}/vmlinuz imager.url=http://${SERVER_IP}/images/${IMAGE_FILE} imager.action=${ACTION} imager.compress=auto${CONTROL_ARG} console=tty0 console=ttyS0,115200 || goto noimager
 initrd http://${SERVER_IP}/${imgdir}/initramfs.img || goto noimager
 boot
 

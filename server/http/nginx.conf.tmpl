@@ -75,6 +75,19 @@ server {
         proxy_read_timeout 5s;
     }
 
+    # The recurring agent check-in. Matched here as well as on the update
+    # listener because a machine's very first heartbeat happens while it is
+    # still on this segment, right after imaging -- and appearing in the fleet
+    # immediately, rather than after it has been moved and reconfigured, is what
+    # tells an operator the imaging run actually worked.
+    location = /api/fleet/heartbeat {
+        proxy_pass http://${WEBUI_ADDR};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 10s;
+    }
+
     # Large image files: stream efficiently, no buffering limits.
     location / {
         add_header Cache-Control "no-cache";

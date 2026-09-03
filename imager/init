@@ -9,6 +9,8 @@
 #   imager.compress=auto        auto|zstd|gzip|none (default: auto from URL)
 #   imager.action=reboot        reboot|poweroff|shell  (default: reboot)
 #   imager.wipe=0               1 = wipe partition table before writing
+#   imager.control=http://LAN/ where the machine checks in from *after* it has
+#                              left the provisioning network (default: unset)
 #
 set -u
 
@@ -77,6 +79,17 @@ if [ -z "$REPORT_URL" ]; then
     # every deployment this ships with.
     REPORT_URL="$(echo "$IMG_URL" | $BB sed -n 's|^\(https\?://[^/]*\)/.*|\1|p')/api/imaging/report"
 fi
+
+# Where the machine should check in from once it has left this network -- which
+# is a different address from the one above, and that difference is the whole
+# point. Everything here happens on a private provisioning segment the machine
+# is about to leave; a control-plane URL pointing at it would be unreachable
+# from the machine's first real boot onward. So the server passes the address
+# that works from out there, and the agent takes it from here. Empty is fine:
+# the agent then falls back to the provisioning address, which is right for a
+# machine that never moves and harmless for one that does -- the server can
+# re-point it in any reply once it has been heard from once.
+CONTROL_URL="$(getarg imager.control '')"
 
 # A machine needs a stable identity across the phases it reports. The MAC of the
 # interface that got the DHCP lease is the same thing the DHCP server and the
@@ -441,8 +454,9 @@ leave_checkin_marker() {
         $BB dmesg 2>&1 | $BB tail -5
         return 0
     fi
-    printf '{"checkin_url":"%s","image":"%s","id":"%s","hostname":"%s"}\n' \
-        "$_url" "$IMG_URL" "$CLIENT_ID" "$ASSIGNED_HOSTNAME" > /mnt/bootpart/ab-deploy.json 2>/dev/null || true
+    printf '{"checkin_url":"%s","control_url":"%s","image":"%s","id":"%s","hostname":"%s"}\n' \
+        "$_url" "$CONTROL_URL" "$IMG_URL" "$CLIENT_ID" "$ASSIGNED_HOSTNAME" \
+        > /mnt/bootpart/ab-deploy.json 2>/dev/null || true
     $BB sync
     $BB umount /mnt/bootpart 2>/dev/null || true
     if [ -n "$ASSIGNED_HOSTNAME" ]; then

@@ -87,6 +87,41 @@ check("the hostname is still passed", "imager.hostname=web01" in kernel_line)
 check("the guard did not swallow a parameter",
       kernel_line.count("|| goto noimager") == 1, kernel_line)
 
+print("== the control-plane address reaches the machine, and only when set ==")
+# The same drift this file exists for, in a second place. Every other parameter
+# on that command line points at SERVER_IP -- the provisioning segment, the one
+# address the machine is guaranteed to lose the moment it is unracked. If
+# imager.control= is missing, the machine writes the provisioning address into
+# its boot marker, the agent adopts it, and the machine never checks in again
+# from anywhere it actually lives. Nothing reports that: it images perfectly and
+# is simply never heard from.
+check("no control parameter when none is configured", "imager.control=" not in kernel_line,
+      kernel_line)
+cfg = orch.read_env()
+cfg["CONTROL_URL"] = "https://flipside.example.com/"
+orch.write_env(cfg)
+orch.write_assignments([{"mac": MAC, "image": "test.img", "hostname": "web01"}])
+kernel_line = [l for l in script_for(MAC).splitlines() if l.startswith("kernel")][0]
+check("the configured control URL is passed",
+      "imager.control=https://flipside.example.com " in kernel_line + " ", kernel_line)
+check("with the trailing slash stripped, so the agent does not build a // URL",
+      "imager.control=https://flipside.example.com/ " not in kernel_line, kernel_line)
+check("and it did not displace anything else",
+      "imager.hostname=web01" in kernel_line and "imager.url=" in kernel_line
+      and kernel_line.count("|| goto noimager") == 1, kernel_line)
+
+print("== the two iPXE scripts still agree ==")
+# The generated script and the fallback template are two implementations of one
+# thing, and this file exists because they drifted once already.
+tmpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "..", "..", "..", "server", "http",
+                         "default.ipxe.tmpl")).read()
+check("the fallback template also carries a control parameter",
+      "${CONTROL_ARG}" in tmpl, tmpl)
+check("and it is on the kernel line, before the console arguments",
+      any(l.startswith("kernel") and "${CONTROL_ARG} console=" in l
+          for l in tmpl.splitlines()), tmpl)
+
 print()
 print(f"{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Hammer, HardDrive, ListChecks, Network, LogOut, Boxes, MonitorSmartphone, Server, Package, KeyRound, FolderCog, Users, KeySquare, Fingerprint, ScrollText } from "lucide-react";
+import { LayoutDashboard, Hammer, HardDrive, ListChecks, Network, LogOut, Boxes, MonitorSmartphone, Server, Package, Rocket, KeyRound, FolderCog, Users, KeySquare, Fingerprint, ScrollText } from "lucide-react";
 import { useAuth, roleAtLeast, Role } from "../lib/auth";
 import { api } from "../lib/api";
 
@@ -16,6 +16,7 @@ const NAV: { to: string; label: string; icon: any; min: Role }[] = [
   { to: "/imaging", label: "Imaging", icon: MonitorSmartphone, min: "viewer" },
   { to: "/fleet", label: "Fleet", icon: Server, min: "viewer" },
   { to: "/updates", label: "Updates", icon: Package, min: "viewer" },
+  { to: "/rollouts", label: "Rollouts", icon: Rocket, min: "viewer" },
   { to: "/secrets", label: "Secrets Manager", icon: KeyRound, min: "admin" },
 ];
 

@@ -44,6 +44,26 @@ class Settings(BaseSettings):
     oidc_display_name: str = "Single sign-on"
     oidc_scopes: str = "openid profile email"
 
+    # --- Fleet control plane (see app/fleet.py and app/rollouts.py) -----------
+    # How often a machine's agent checks in, in seconds. Sent back in every
+    # heartbeat response, so changing it here re-paces the whole fleet without
+    # touching a single machine — which matters, because the machines are the
+    # one thing this server cannot reach.
+    agent_interval: int = 300
+    # The base URL agents should report to from now on, e.g.
+    # https://flipside.example.com. Machines learn their first one from the
+    # imager, which necessarily knows only the provisioning address — the
+    # address a machine stops being able to reach the moment it leaves the
+    # imaging switch. Setting this re-points the fleet at an address that works
+    # from wherever the machines actually live; agents adopt it on their next
+    # successful check-in and persist it. Leave empty to leave them alone.
+    control_url: str = ""
+    # Optional shared secret an agent must present to check in. Off by default:
+    # the first heartbeat arrives from a machine that has just been imaged and
+    # holds no credential it did not get from this server. Set it when the
+    # control plane is reachable from a network you do not trust.
+    agent_token: str = ""
+
     @property
     def output_dir(self) -> str:
         return f"{self.project_dir}/output"

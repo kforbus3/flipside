@@ -30,6 +30,12 @@ OVERLAY_MIN="${OVERLAY_MIN:-}"          # empty = from the state model; see belo
 IMAGE_SIZE="${IMAGE_SIZE:-auto}"        # GiB, or "auto" = smallest possible
 OUTPUT="${OUTPUT:-}"                    # empty = /output/<distro>-<suite>-ab.img
 EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
+# What this build calls itself. Written into the image as
+# /usr/lib/flipside/version, which is what a running machine reports to the
+# control plane -- so two builds of the same suite are distinguishable, which
+# os-release alone cannot do. make-bundle.sh replaces it with the bundle's
+# version, so an updated slot reports the bundle it was installed from.
+IMAGE_VERSION="${IMAGE_VERSION:-}"      # empty = UTC build timestamp
 # Build profile: what the image is *for*, spelled as a named package set rather
 # than a list everyone retypes. minimal is exactly the base system this project
 # has always built -- the flag only names it, so existing builds change in
@@ -172,6 +178,7 @@ while [[ $# -gt 0 ]]; do
         --boot-size) BOOT_SIZE="$2"; shift 2;;
         --image-size) IMAGE_SIZE="$2"; shift 2;;
         --output) OUTPUT="$2"; shift 2;;
+        --version) IMAGE_VERSION="$2"; shift 2;;
         --packages) EXTRA_PACKAGES="$2"; shift 2;;
         --profile) PROFILE="$2"; shift 2;;
         --desktop) DESKTOP_ENV="$2"; DESKTOP_SET=true; shift 2;;
@@ -501,6 +508,11 @@ case "$DISTRO" in
         ;;
     *) die "--distro must be debian or ubuntu";;
 esac
+# A build with no version given still gets one. An unversioned image is one the
+# control plane cannot reason about: a rollout finishes when every machine
+# reports the target version, and machines that all report the same string for
+# two different builds can never be told apart.
+IMAGE_VERSION="${IMAGE_VERSION:-$(date -u +%Y.%m.%d-%H%M)}"
 # Minimum workable root slot, measured per distro. Ubuntu's linux-image-generic
 # hard-depends on linux-firmware and linux-modules-extra (~1.7 GiB installed),
 # which Debian's linux-image-amd64 does not — so the same 3 GiB slot that is
@@ -1178,12 +1190,24 @@ chmod +x "$MNT/usr/local/sbin/first-boot-expand.sh" "$MNT/usr/local/sbin/luks-en
          "$MNT/usr/local/sbin/ab-update.sh" "$MNT/usr/local/sbin/ab-sync-boot.sh" \
          "$MNT/usr/local/sbin/ab-slot-pending.sh" \
          "$MNT/usr/local/sbin/ab-health-check.sh" \
+         "$MNT/usr/local/sbin/ab-agent.sh" \
          "$MNT/usr/local/sbin/ab-kernel-hook.sh"
 # The others are only ever run by systemd; this one is run by a person, so it
 # gets a name without the extension and a place on the default PATH.
 ln -sf ab-overlay-diff.sh "$MNT/usr/local/sbin/ab-overlay-diff"
 ln -sf ab-update.sh       "$MNT/usr/local/sbin/ab-update"
 ln -sf ab-sync-boot.sh    "$MNT/usr/local/sbin/ab-sync-boot"
+ln -sf ab-agent.sh        "$MNT/usr/local/sbin/ab-agent"
+
+# What this slot is running, written where the running system can read it and
+# where a bundle built from this image will carry it along. It is the only way
+# a machine can tell the server which build it is on: nothing else on a booted
+# system records that, and os-release names the Debian release, which every
+# build of this image shares. make-bundle.sh overwrites it with the bundle's
+# own version, so a slot always describes what was actually installed into it
+# -- including after a rollback, since the other slot keeps its own copy.
+install -d -m755 "$MNT/usr/lib/flipside"
+printf '%s\n' "$IMAGE_VERSION" > "$MNT/usr/lib/flipside/version"
 
 # Recovery is the thing nobody remembers under pressure, so the machine says it
 # on every login rather than leaving it to documentation on another computer.
@@ -1249,6 +1273,13 @@ install -m0755 "$OVERLAY_DIR/usr/local/sbin/ab-kernel-hook.sh" \
 chroot "$MNT" systemctl enable first-boot-expand.service ab-mark-good.service \
                                 ab-health-check.service \
                                 machine-identity.service ab-checkin.service
+# The recurring control-plane check-in. ab-checkin.service stays alongside it
+# and is not replaced: that one fires once, at boot, and is what records "this
+# machine booted what you gave it" in the provisioning history. The timer
+# answers the different question of what is true now. Enabling the *timer*, not
+# the service -- enabling the service would run one check-in at boot and never
+# again, which is the behaviour this is here to fix.
+chroot "$MNT" systemctl enable ab-agent.timer
 # The directory is part of the image's layout, so a check dropped in through
 # overlay.d has somewhere to land and `ls` on a running machine answers "none".
 install -d -m755 "$MNT/etc/ab/health.d"
@@ -1484,6 +1515,7 @@ step "Writing SHA256 checksum and metadata sidecars"
 cat > "${OUT}.json" <<EOF
 {
   "distro": "$DISTRO",
+  "version": "$IMAGE_VERSION",
   "suite": "$SUITE",
   "arch": "$ARCH",
   "profile": "$PROFILE",

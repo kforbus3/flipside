@@ -206,6 +206,16 @@ if [ -n "$(ls -A "$WORK/slot/etc/cryptsetup-keys.d" 2>/dev/null)" ]; then
     log "      keep the key on the BOOT partition where an update cannot reach it."
 fi
 
+# Stamp the bundle's own version into the filesystem it is about to ship, so a
+# machine that installs it reports *this* version rather than the version of the
+# image it happened to be built from. It is the only way the control plane can
+# tell a machine that took the update from one that did not: nothing else on a
+# running system records which bundle wrote its root slot, and a rollout that
+# cannot check that can never finish. The other slot keeps its own copy, so a
+# rollback reports the version it rolled back to rather than lying about it.
+install -d -m755 "$WORK/slot/usr/lib/flipside"
+printf '%s\n' "$VERSION" > "$WORK/slot/usr/lib/flipside/version"
+
 log "Packing the root slot (this is the slow part)"
 tar --numeric-owner --xattrs --xattrs-include='*' \
     --warning=no-file-ignored --warning=no-file-changed \

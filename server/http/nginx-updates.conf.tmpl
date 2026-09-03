@@ -29,6 +29,26 @@ server {
         add_header Cache-Control "no-cache";
     }
 
+    # The control plane's one machine-facing endpoint, on the address the fleet
+    # can actually reach. Without this the agent could download a bundle from
+    # here but had nowhere to ask whether it should -- and a control plane the
+    # machines cannot reach is not a control plane, it is a wish list.
+    #
+    # Exactly this path, like the imaging endpoints on the other listener. The
+    # rest of /api/ is the admin surface, and this address is by definition the
+    # more exposed of the two: it is bound wherever the fleet lives, which may
+    # be a general-purpose LAN rather than a segment kept for provisioning.
+    location = /api/fleet/heartbeat {
+        proxy_pass http://${WEBUI_ADDR};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_connect_timeout 2s;
+        # Longer than the imaging endpoints': this one does real work (it folds
+        # the report into any rollout that owns the machine), and a machine that
+        # gives up early simply does not learn about an update it is due.
+        proxy_read_timeout 10s;
+    }
+
     location = /health {
         access_log off;
         return 200 "OK\n";

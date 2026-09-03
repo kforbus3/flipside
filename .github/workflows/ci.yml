@@ -160,6 +160,27 @@ jobs:
           # exactly like a working UI.
           python tests/test_identity.py
 
+      - name: The rollout engine decides from what machines actually report
+        working-directory: webui/backend
+        run: |
+          # Drives the real heartbeat endpoint one machine at a time, because
+          # every failure here is silent and fleet-wide. The load-bearing one:
+          # a machine that says an install finished is NOT a success -- it is
+          # still on the old version until it comes back on the new one, which
+          # is exactly what a bundle that installs and then fails to boot looks
+          # like. An engine that counted the install would walk a bricking
+          # update across the whole fleet while every machine rolled back.
+          python tests/test_fleet_rollout.py
+
+      - name: The agent installs what it is offered, exactly once
+        run: |
+          # The machine half, running the real ab-agent.sh against a stub
+          # server. Covers the parsing of a directive, remembering which server
+          # it was moved to, and not reinstalling the same bundle on every beat
+          # -- which on a five-minute timer is a machine that never stops
+          # downloading.
+          ./scripts/test-fleet-agent.sh
+
       - name: Every change leaves an audit line
         working-directory: webui/backend
         run: |

@@ -12,6 +12,7 @@ import Provisioning from "./pages/Provisioning";
 import Imaging from "./pages/Imaging";
 import Fleet from "./pages/Fleet";
 import Updates from "./pages/Updates";
+import Rollouts from "./pages/Rollouts";
 import Secrets from "./pages/Secrets";
 import UsersPage from "./pages/Users";
 import Tokens from "./pages/Tokens";
@@ -41,6 +42,7 @@ export default function App() {
       <Route path="/imaging" element={<Protected><Imaging /></Protected>} />
       <Route path="/fleet" element={<Protected><Fleet /></Protected>} />
       <Route path="/updates" element={<Protected><Updates /></Protected>} />
+      <Route path="/rollouts" element={<Protected><Rollouts /></Protected>} />
       <Route path="/secrets" element={<Protected admin><Secrets /></Protected>} />
       <Route path="/users" element={<Protected admin><UsersPage /></Protected>} />
       <Route path="/tokens" element={<Protected admin><Tokens /></Protected>} />

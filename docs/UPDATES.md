@@ -166,7 +166,10 @@ more widely does not weaken anything.
 `/boot/ab-deploy.json` still records the address the machine was **imaged** from,
 so bare `ab-update` on an already-deployed machine keeps pointing at the
 provisioning IP. Give the LAN URL explicitly on those; machines imaged from here
-on pick it up on their own.
+on pick it up on their own — or set `CONTROL_URL` (see
+[Fleet-wide rollouts](#fleet-wide-rollouts) below), which is the general fix:
+the agent is told the working address on every check-in and rewrites its own
+configuration, so the fleet moves itself.
 
 Do not use the web UI's port. It answers any unknown path with its own front
 page, so a bundle URL there downloads the UI instead of the bundle — `ab-update`
@@ -264,16 +267,118 @@ machine itself.
 `apt-get upgrade` happens inside the build, so rebuilding picks up whatever is
 current in the archive, and the bundle ships it to the fleet.
 
+## Fleet-wide rollouts
+
+`ab-update` updates one machine, from that machine. A rollout updates a group of
+them, from the web UI.
+
+It is a **pull**, and that is not an implementation detail — it is the only
+design that works here. A machine is imaged on a private provisioning switch and
+then moved to wherever it is going to live. From that moment this server does
+not know its address, usually cannot route to it, and should not want an inbound
+port open on it. So the server records what each machine *should* be running,
+and each machine asks.
+
+### The one thing that has to be true
+
+**Machines must be able to reach this server**, on one HTTP(S) port, outbound
+only. If some site has no route back at all, nothing automatic is possible there
+and `ab-update` by hand is the only option.
+
+Set `CONTROL_URL` in `server/.env` (or on the Provisioning page) to an address
+that works from where the fleet actually lives:
+
+```
+CONTROL_URL=http://10.0.2.20        # the host's LAN address
+CONTROL_URL=https://flipside.example.com
+```
+
+Machines being imaged get it on the kernel command line and write it to
+`/boot/ab-deploy.json`. Machines already deployed are told about it in their next
+check-in reply and rewrite their own configuration — so this is also the way to
+rescue a fleet that was imaged pointing at the provisioning address, without
+visiting a single machine. To do one by hand:
+
+```bash
+ab-agent --set-server https://flipside.example.com
+ab-agent --status            # what this machine reports, and to where
+```
+
+### The agent
+
+Each image runs `ab-agent.timer` every five minutes (with a stable per-machine
+offset, so a site that loses power does not bring the whole fleet back on the
+same second). Each run reports what the machine is running and asks what it
+should be; the answer is `nothing to do` or a bundle to install.
+
+Its configuration lives in `/etc/flipside/agent.conf`, which is on the overlay
+in every state model and so survives updates:
+
+| setting | meaning |
+| --- | --- |
+| `SERVER` | control-plane base URL |
+| `INTERVAL` | advisory; the timer is what actually paces check-ins |
+| `TOKEN` | sent as `X-Flipside-Agent-Token` when the server requires one |
+| `REBOOT` | `auto` (default) reboots after an install; `manual` waits for a person |
+| `ENABLED` | `0` turns the agent off without uninstalling it |
+
+### Groups
+
+A rollout targets a group, and group membership is an operator's word about a
+machine — an agent cannot put itself in one. Set them on the Fleet page. Targets
+resolve **live**, so a machine imaged into `prod` today is picked up by a rollout
+that started yesterday and has not finished.
+
+### How a rollout advances
+
+Create one on the **Rollouts** page: a bundle, a target, and a strategy.
+
+1. **Canary** — that many machines go first, and nothing else starts until they
+   have come back.
+2. **Soak** — the canaries have to stay up for this long before the rest follow.
+   An update that bricks a machine ten minutes in is still a bricked machine.
+3. **Batches** — then that many at a time.
+4. **Failure budget** — that many failures and the rollout halts itself.
+
+A machine counts as done only when it **comes back on the new version and passes
+its health check**. Not when the install returns zero: a bundle that installs
+perfectly and then fails to boot is exactly the failure the A/B layout exists to
+survive, and a rollout that counted the install would march it across the whole
+fleet while every machine quietly rolled back.
+
+A maintenance window, if set, gates when a machine is allowed to *start*. It is
+server-local time — a window evaluated on each machine's own clock means the
+machine whose timezone is wrong is the one that reboots mid-shift. A long
+download can carry the reboot past the end of the window.
+
+Pausing stops further machines being offered the bundle. It cannot recall one
+already installing: there is no way to reach a machine, and interrupting an
+install is how a machine ends up on neither version. Resuming after a halt
+continues with the untried machines and starts the failure budget again from
+there; the machines that failed stay failed.
+
+Machines can be **held** individually (Fleet → Edit → hold). A held machine keeps
+reporting and stays in its groups but is never offered an update, and the rest of
+the group carries on without waiting for it.
+
 ## Watching a rollout
 
-The **Fleet** page lists every machine this server has imaged, what it is
-running, and whether it reported back after booting. A machine shown as
-`never-booted` finished imaging and was never heard from again — the case the
-imager's own reports cannot cover, because the last of them is sent before the
-reboot.
+The **Fleet** page lists every machine, what it is running, its groups, and when
+it last checked in. Presence is about silence, not failure:
 
-**Updates** shows the versions running across the fleet, so you can tell whether
-a bundle has been rolled out or merely built.
+| state | meaning |
+| --- | --- |
+| `online` | heard from within the last few intervals |
+| `stale` | quiet for a while, but seen within the day |
+| `offline` | not heard from in over a day |
+| `no agent` | never ran one — imaged before this existed, or the agent is off |
+
+`no agent` is deliberately not `offline`. A machine that never had an agent has
+not gone quiet; it was never speaking, and reporting those as offline would fill
+the page with alarms about machines that are fine.
+
+**Rollouts** shows each rollout's machines by phase, and **Updates** shows the
+versions running across the fleet.
 
 ## When an update is refused
 
