@@ -64,15 +64,23 @@ cat > "$WORK/ctx/Dockerfile" <<'EOF'
 FROM busybox:latest
 RUN echo built > /marker
 EOF
-if docker build -q -t dp-test-image "$WORK/ctx" >/dev/null 2>&1; then
+# Reported as a failure with its output, not as a skip. A build that will not
+# run is the single likeliest way this proxy breaks the project, and the first
+# version of this test hid exactly that behind a SKIP: `docker build` uses
+# BuildKit on every current Docker, which does not touch /build at all -- it
+# opens a hijacked /session and speaks gRPC over /grpc. Neither was on the
+# allowlist, so every build failed with a bare 403, and the test said "skipped".
+if docker build -t dp-test-image "$WORK/ctx" > "$WORK/build.log" 2>&1; then
     pass "docker build"
 else
-    # busybox has to be pullable; if the runner is offline this is not a proxy
-    # failure and must not be reported as one.
-    if docker image inspect busybox:latest >/dev/null 2>&1; then
-        bad "docker build" "(see $WORK/proxy.log)"
+    if grep -qiE "network|dial tcp|no such host|lookup|TLS handshake" "$WORK/build.log"; then
+        # No network on the runner is not a proxy failure and must not be
+        # reported as one -- but say so, rather than staying quiet.
+        echo "  SKIP  docker build (this runner cannot reach a registry)"
     else
-        echo "  SKIP  docker build (busybox not present and pulls are refused)"
+        bad "docker build" "(output below, proxy log at $WORK/proxy.log)"
+        tail -20 "$WORK/build.log" | sed 's/^/        /'
+        grep DENY "$WORK/proxy.log" | tail -5 | sed 's/^/        /'
     fi
 fi
 
@@ -170,9 +178,12 @@ echo "== every decision is logged =="
 grep -q "^.*DENY POST /containers/create" "$WORK/proxy.log" \
     && pass "denials are logged with the call" \
     || bad "denials are logged with the call"
-grep -q "ALLOW GET /version" "$WORK/proxy.log" \
+# The logged path keeps the API version prefix the client sent, so this is
+# /v1.51/version rather than /version -- matching the bare form failed against a
+# proxy that was logging perfectly.
+grep -qE "ALLOW GET (/v[0-9.]+)?/version" "$WORK/proxy.log" \
     && pass "so are the calls that were allowed" \
-    || bad "so are the calls that were allowed"
+    || { bad "so are the calls that were allowed"; grep ALLOW "$WORK/proxy.log" | head -5 | sed 's/^/        /'; }
 
 echo
 echo "$ok passed, $fail failed"
