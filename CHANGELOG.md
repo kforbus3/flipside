@@ -2,6 +2,75 @@
 
 Notable changes per release. Dates are the tag date.
 
+## Unreleased
+
+**Fleet management, and the enterprise gaps around it.** Six things a fleet of
+this needed and did not have.
+
+- **A control plane the fleet pulls from.** `ab-update` could update one
+  machine, from that machine; there was no way to update a fleet, and no way to
+  know one was still out there — the boot check-in fired once, at boot, so a
+  machine that died three weeks after imaging read `running` forever. Machines
+  now run `ab-agent.timer`, which reports in every five minutes and receives a
+  directive back. Nothing is ever pushed: a machine is imaged on a private
+  provisioning switch and then moved somewhere this server cannot reach, so the
+  server records what each machine *should* run and each machine asks.
+  - **Host groups**, set by operators — an agent cannot put itself in one.
+    Targets resolve live, so a machine imaged into a group today is picked up
+    by a rollout that started yesterday.
+  - **Staged rollouts**: canary, then a soak, then batches, halting on a
+    failure budget, optionally inside a maintenance window. A machine counts as
+    done only when it comes back **on the new version and healthy** — not when
+    the install returns zero. A bundle that installs and then fails to boot is
+    the failure the A/B layout exists to survive, and a rollout that counted
+    the install would walk it across the whole fleet while every machine
+    quietly rolled back.
+  - **Presence** — online / stale / offline, with "no agent" kept distinct from
+    offline: a machine that never ran one has not gone quiet.
+  - **The imaging-address trap is closed.** `/boot/ab-deploy.json` recorded the
+    provisioning address — the one address a machine is guaranteed to lose.
+    `CONTROL_URL` is written onto machines at imaging time *and* re-advertised
+    in every check-in reply, so an existing fleet re-points itself without
+    anyone visiting a machine.
+
+- **An SBOM per image and per bundle.** The sidecar recorded distro, suite,
+  profile and sizes, and nothing about what was *in* the image — so "which of
+  our images carry the vulnerable openssl" meant mounting each one. SPDX 2.3,
+  CycloneDX 1.5 and a raw TSV are written beside every artifact, taken from
+  dpkg while the slot is still mounted. `GET /api/sbom?package=` searches all
+  of them at once and reports how many were searched, so "no results" cannot be
+  read as "your fleet is clear" when the truth is "nothing has an SBOM".
+
+- **Metrics, structured logs, and an audit trail that leaves the box.**
+  `/metrics` in Prometheus format (behind the viewer role by default — it is a
+  map of the estate), `LOG_JSON=true` for one JSON object per line, and
+  `AUDIT_SYSLOG` / `AUDIT_HTTP_URL` to ship every audit event as it happens.
+  Delivery never blocks a request: the local `audit.jsonl` is bounded and
+  trimmed, so it is a buffer rather than an archive — and it lives on the
+  machine being audited.
+
+- **UEFI Secure Boot on the installed image.** `--secure-boot auto` (the new
+  default) installs the distribution's signed shim and GRUB, so a built image
+  boots where Secure Boot is mandated. Nothing of yours is signed and nothing
+  is enrolled on any machine. **Imaging still needs it off** — the netboot
+  imager is an unsigned initramfs — so the sequence is disable, image,
+  re-enable.
+
+- **The web UI no longer holds the Docker socket.** An allowlisting proxy
+  (`dockerproxy/`) passes the container-lifecycle and build calls this project
+  makes and refuses the rest: exec, attach, arbitrary images, host bind mounts,
+  the socket itself, privilege for anything but the builder. It does **not**
+  make the UI non-root-equivalent — the image builder must run privileged, so
+  anyone who can start a build can reach host root, and the documentation now
+  says so plainly instead of implying the socket was the whole problem.
+
+- **Backup and restore in one command.** `make backup` / `make restore FILE=`,
+  a Backup page, and `scripts/flipside-backup.sh` for when the web UI is the
+  thing that is broken. The documentation used to list six paths and say "put
+  the files back"; that list grew by four entries in this release alone. The
+  restore verifies every file against its recorded checksum before writing
+  anything, so a damaged archive changes nothing.
+
 ## v0.9.1 — 2026-08-17
 
 **A desktop build gets the `/boot` it actually needs.** The first real desktop
