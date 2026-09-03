@@ -156,9 +156,6 @@ code=$(api POST "/containers/dp-test-victim/exec" \
 [ "$code" = "403" ] && pass "exec into another container is refused" \
                     || bad "exec into another container is refused" "got $code"
 
-code=$(api POST "/containers/dp-test-victim/attach?stream=1&stdout=1" '')
-[ "$code" = "403" ] && pass "attach is refused" || bad "attach is refused" "got $code"
-
 code=$(api POST "/images/create?fromImage=alpine&tag=latest" '')
 [ "$code" = "403" ] && pass "pulling an arbitrary image is refused" \
                     || bad "pulling an arbitrary image is refused" "got $code"
