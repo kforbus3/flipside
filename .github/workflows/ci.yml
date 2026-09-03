@@ -113,10 +113,31 @@ jobs:
           client = TestClient(app)
           # Routes included via include_router used to appear flattened in
           # app.routes; FastAPI 0.141 nests them inside _IncludedRouter
-          # objects with no path, which made every router look unmounted.
-          # The OpenAPI schema always carries the full prefixed paths, so
-          # take the union of both views.
-          paths = {r.path for r in app.routes if getattr(r, "path", "").startswith("/api")}
+          # objects, which have no .path and no .routes -- they hold the
+          # original router and the prefix it was mounted under. Unioning
+          # app.routes with the OpenAPI schema covered that for a while, but
+          # the schema omits include_in_schema=False routes, so /api/metrics
+          # -- mounted and working -- reported as a router that had never been
+          # mounted at all. Walk the real structure instead.
+          def walk(routes):
+              for r in routes:
+                  p = getattr(r, "path", None)
+                  if p:
+                      yield p
+                  yield from walk(getattr(r, "routes", []) or [])
+                  original = getattr(r, "original_router", None)
+                  if original is not None:
+                      ctx = getattr(r, "include_context", None)
+                      prefix = getattr(ctx, "prefix", "") if ctx is not None else ""
+                      for sub in getattr(original, "routes", []):
+                          sp = getattr(sub, "path", None)
+                          if sp:
+                              yield prefix + sp
+
+          paths = set(walk(app.routes))
+          # Belt and braces: if a future FastAPI changes the internals again the
+          # schema still carries every documented path, so this degrades to its
+          # old coverage rather than to a false failure on every hidden route.
           paths |= set(app.openapi().get("paths", {}))
 
           # Every router module must actually be mounted. A router that is
