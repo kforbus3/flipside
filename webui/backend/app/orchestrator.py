@@ -489,6 +489,11 @@ LOW_DISK_GB = 12.0
 # installs — the UI never needs them, but the docs and tests read them from
 # here so there is one copy of the mapping on this side, not two.
 PROFILES = ("minimal", "server", "desktop")
+# auto: use the distribution's signed shim and GRUB when the suite has them.
+# on:   fail the build if it cannot, so a fleet that requires Secure Boot is
+#       never handed an image that quietly does not support it.
+# off:  the old unsigned layout.
+SECURE_BOOT_MODES = ("auto", "on", "off")
 DESKTOP_ENVS: dict[str, dict[str, str]] = {
     "debian": {
         "gnome": "task-gnome-desktop",
@@ -628,6 +633,13 @@ def build_image_cmd(opts: dict) -> tuple[list[str], str, dict]:
         args += ["--profile", profile]
         if profile == "desktop" and opts.get("desktop"):
             args += ["--desktop", str(opts["desktop"])]
+    # `auto` is the builder's default and adds no argument, so a build request
+    # that never heard of Secure Boot produces exactly the command it always did.
+    secure_boot = str(opts.get("secure_boot") or "auto")
+    if secure_boot not in SECURE_BOOT_MODES:
+        raise ValueError(f"secure_boot must be one of {', '.join(SECURE_BOOT_MODES)}")
+    if secure_boot != "auto":
+        args += ["--secure-boot", secure_boot]
     if opts.get("packages"):
         args += ["--packages", opts["packages"]]
     if opts.get("ssh_key"):

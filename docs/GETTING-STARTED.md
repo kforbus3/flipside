@@ -33,7 +33,7 @@ and machine-id on first boot.
 | A Linux host (or Docker Desktop) with **Docker + Compose** | Everything runs in containers; the builder needs `--privileged` for loop devices |
 | ~16 GiB free disk in the repo's `output/` | Raw image + compressed image + netboot files (the builder warns below this for the default build) |
 | For imaging: a host attached to the **imaging LAN/switch** | The provisioning server uses host networking for DHCP/TFTP |
-| Target machines that can **PXE boot** (BIOS or UEFI) | UEFI targets must have **Secure Boot disabled** |
+| Target machines that can **PXE boot** (BIOS or UEFI) | Secure Boot must be off **while imaging**; the installed image boots with it back on |
 
 The builder, imager, and server are `linux/amd64` images and produce amd64
 systems; on Apple Silicon or other arm64 hosts they run under emulation
@@ -134,7 +134,9 @@ The four settings that matter:
 
 1. Plug the targets into the switch.
 2. In each machine's firmware: enable **network/PXE boot** (and on UEFI,
-   **disable Secure Boot**). Both BIOS and UEFI machines work, including mixed
+   **disable Secure Boot for the imaging run** — the netboot imager is an
+   unsigned initramfs; turn it back on afterwards and the installed image boots
+   with it). Both BIOS and UEFI machines work, including mixed
    batches.
 3. Power on and walk away. Each machine PXE-boots the imager, streams the
    image, writes it, and reboots into the installed system.
@@ -203,7 +205,7 @@ you are in), and use the **Build** page
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | Machine PXE-boots but gets no answer | `SERVER_IP`/`PROXY_SUBNET` wrong, or the server isn't on the same L2 segment; check `make server-logs` |
-| UEFI machine won't boot the imager | Secure Boot is enabled — disable it |
+| UEFI machine won't boot the imager | Secure Boot is enabled — turn it off to image, then back on; the installed image supports it |
 | Imager writes the wrong disk | Pin it: `imager.disk=/dev/…` in `boot.ipxe.tmpl` |
 | "checksum mismatch" during imaging | Stale `.sha256` sidecar — rebuild or re-copy the image and its sidecars together |
 | Imaged machine boots to GRUB but no OS | Image/firmware mismatch is *not* possible (hybrid boot); check the disk actually finished writing (imager log on the console) |

@@ -223,6 +223,53 @@ question is nearly always "which ones are still on 3.0.x". The answer names
 images and bundles alike, and reports how many artifacts were searched — so
 "no results" cannot be confused with "nothing had an SBOM to search".
 
+## Secure Boot
+
+`--secure-boot auto` (the default) installs the distribution's signed shim and
+GRUB and lays them out at the firmware's removable path:
+
+```
+firmware --(Microsoft key)--> shim --(distro key, built into shim)--> GRUB
+        --(shim lock protocol)--> kernel, which Debian and Ubuntu sign
+```
+
+Nothing of yours is signed and nothing has to be enrolled on any machine, which
+is the entire reason to use the distribution's chain rather than your own key.
+
+| mode | behaviour |
+| --- | --- |
+| `auto` | use signed shim and GRUB if the suite has them; carry on without if not |
+| `on` | fail the build if they cannot be had |
+| `off` | the old unsigned layout |
+
+`on` is worth using in a pipeline: it means a suite that stops shipping signed
+shim packages breaks the build rather than quietly producing an image that a
+Secure Boot fleet cannot run.
+
+**A Secure Boot image also boots with Secure Boot disabled**, and the BIOS path
+is untouched — shim simply runs GRUB without verifying it. There is no machine
+this costs anything, which is why it is the default.
+
+**Imaging is the exception.** The netboot imager is a custom initramfs that
+nothing signs, so the imaging run itself still needs Secure Boot off. The
+sequence on a machine where policy requires it:
+
+1. disable Secure Boot in firmware
+2. PXE boot and image the machine
+3. re-enable Secure Boot
+4. it boots
+
+Whether an image has it is recorded in the sidecar as `secure_boot`, so you can
+tell without booting one.
+
+### If it does not boot
+
+The distribution's signed GRUB has its prefix compiled in and looks for
+`\EFI\debian\grub.cfg` (or `\EFI\ubuntu\`) on the ESP. The builder writes a
+stub there that hands off to the real configuration on the BOOT partition. If a
+machine reaches a GRUB rescue prompt with Secure Boot working perfectly, that
+stub is what is missing.
+
 ## Customization
 
 - **More packages:** `make image PACKAGES="qemu-guest-agent vim curl"` (or
@@ -659,8 +706,11 @@ Configuration comes from the environment, as both CLIs expect: `BAO_ADDR` /
   (`\EFI\BOOT\BOOTX64.EFI`, no NVRAM entry needed — right for mass imaging).
   Both share the same `grub.cfg` and `grubenv` on the BOOT partition, so A/B
   slot logic behaves identically under either firmware.
-- **Secure Boot is not supported** (GRUB is unsigned) — disable it on UEFI
-  targets, or sign the bootloader yourself.
+- **Secure Boot works for the deployed machine, but not while imaging it.** A
+  built image carries the distribution's signed shim and GRUB and boots with
+  Secure Boot enabled (see below). The *netboot imager* is a custom initramfs
+  that nothing signs, so Secure Boot has to be off for the imaging run itself —
+  disable it, image the machine, turn it back on.
 - `/boot` and the kernel are shared across A/B; A/B applies to the root
   filesystem. A bad kernel affects both slots — test kernel changes before
   rolling out. See [UPDATES.md](UPDATES.md).

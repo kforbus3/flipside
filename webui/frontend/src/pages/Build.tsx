@@ -58,7 +58,7 @@ export default function Build() {
   const { canOperate } = useAuth();
   const [opts, setOpts] = useState({
     distro: "debian", suite: "trixie", arch: "amd64",
-    profile: "minimal", desktop: "gnome",
+    profile: "minimal", desktop: "gnome", secure_boot: "auto",
     name: "", replace: false,
     hostname: "debian-ab", username: "admin", password: "",
     image_size: 0, root_size: 3072, compress: "zstd", packages: "",
@@ -268,6 +268,34 @@ export default function Build() {
                   ))}
                 </Select>
               </div>
+            )}
+            <div>
+              <Label>Secure Boot</Label>
+              <Select value={opts.secure_boot} onChange={(e) => set("secure_boot", e.target.value)}>
+                <option value="auto">Auto — use signed shim and GRUB if available</option>
+                <option value="on">Required — fail the build without them</option>
+                <option value="off">Off — unsigned GRUB only</option>
+              </Select>
+            </div>
+            {opts.secure_boot !== "off" && (
+              <p className="col-span-2 text-xs text-zinc-500">
+                The image carries the distribution's signed shim and GRUB, so it boots
+                on machines where Secure Boot is enforced — nothing of yours is signed
+                and nothing needs enrolling. It also boots with Secure Boot disabled,
+                so this costs nothing either way.{" "}
+                <span className="text-zinc-400">
+                  Imaging itself still needs Secure Boot off: the netboot imager is an
+                  unsigned initramfs. Disable it, image the machine, turn it back on.
+                </span>
+              </p>
+            )}
+            {opts.secure_boot === "on" && (
+              <p className="col-span-2 text-xs text-amber-300/80">
+                The build fails rather than producing an unsigned image — worth using
+                in a pipeline, so a suite that stops shipping signed shim packages
+                breaks the build instead of quietly shipping something the fleet
+                cannot run.
+              </p>
             )}
             {opts.profile === "server" && (
               <p className="col-span-2 text-xs text-zinc-500">

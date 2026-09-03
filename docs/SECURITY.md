@@ -66,8 +66,11 @@ requests) and restrict it to one interface with `INTERFACE=`.
 - The OpenAPI schema at `/docs` is intentionally readable without login; every
   endpoint it describes requires auth (403 for an authenticated principal
   whose role is insufficient).
-- For UEFI Secure Boot targets you must sign the iPXE binary / use a signed
-  shim chain; by default, disable Secure Boot on the targets during imaging.
+- **Imaging** requires Secure Boot to be off on the target: the netboot imager
+  is a custom initramfs and nothing signs it. The **installed image** supports
+  Secure Boot — it carries the distribution's signed shim and GRUB — so the
+  sequence on a machine where policy requires it is disable, image, re-enable.
+  Signing the imager chain is not done and is an open item.
 
 ## Disk encryption
 

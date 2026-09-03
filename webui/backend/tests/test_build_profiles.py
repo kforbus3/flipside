@@ -130,6 +130,26 @@ check("a desktop build at 8 GiB is refused up front",
 check("a desktop build at 22 GiB validates",
       refused({**base, "profile": "desktop", "image_size": 22}) is None)
 
+print("== Secure Boot reaches the builder, and only when it is not the default ==")
+# auto is the builder's own default, so a build request that never heard of
+# Secure Boot has to produce exactly the command it always did -- otherwise
+# every existing caller silently changes what it builds.
+cmd, _label, _env = orch.build_image_cmd({**base})
+check("a request with no secure_boot passes no flag",
+      "--secure-boot" not in " ".join(cmd), cmd)
+cmd, _l, _e = orch.build_image_cmd({**base, "secure_boot": "auto"})
+check("nor does an explicit auto", "--secure-boot" not in " ".join(cmd), cmd)
+for mode in ("on", "off"):
+    cmd, _l, _e = orch.build_image_cmd({**base, "secure_boot": mode})
+    # The arguments are shell-quoted into the generated script, so match the
+    # quoted pair rather than the bare words -- checking for "--secure-boot on"
+    # would fail on a command that is perfectly correct.
+    check(f"secure_boot={mode} reaches the builder",
+          f"'--secure-boot' '{mode}'" in " ".join(cmd), cmd[-1][-200:])
+exc = refused({**base, "secure_boot": "yes-please"})
+check("an unknown mode is refused up front",
+      exc is not None and exc.status_code == 400, exc and getattr(exc, "detail", ""))
+
 print("== the API refuses before any job exists ==")
 # Through the real route: authentication, preflight, validation, in that
 # order. preflight is stubbed -- this container has no Docker socket, and a

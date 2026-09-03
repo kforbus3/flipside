@@ -48,10 +48,13 @@ GPT:
   p6  overlay     rest     persistent data /var/lib/overlay  (grows on first boot)
 ```
 
-- **Boots on BIOS and UEFI** — GRUB is installed for both (`i386-pc` in the
-  bios_grub partition, `x86_64-efi` at the removable path `\EFI\BOOT\BOOTX64.EFI`),
-  so the same image works on legacy and modern firmware. Secure Boot must be
-  disabled on UEFI machines.
+- **Boots on BIOS and UEFI, with Secure Boot** — GRUB is installed for both
+  (`i386-pc` in the bios_grub partition, and the distribution's signed shim and
+  GRUB at the removable path `\EFI\BOOT\BOOTX64.EFI`), so the same image works
+  on legacy firmware, on modern firmware, and on a machine where Secure Boot is
+  mandated. Nothing of yours needs signing and nothing needs enrolling.
+  Imaging itself still needs Secure Boot off — the netboot imager is an unsigned
+  initramfs — so the sequence is: disable, image, re-enable.
 - **A/B roots** let you update atomically: write the inactive slot, flip the
   GRUB boot order, reboot. Both slots are populated at build time.
 - **Root is an overlay**: the slot is the read-only lower layer and everything

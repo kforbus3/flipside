@@ -47,6 +47,14 @@ def _validate_build(opts: dict) -> None:
     profile = str(opts.get("profile") or "minimal")
     if profile not in orch.PROFILES:
         raise HTTPException(400, f"profile must be one of {', '.join(orch.PROFILES)}")
+    secure_boot = str(opts.get("secure_boot") or "auto")
+    if secure_boot not in orch.SECURE_BOOT_MODES:
+        raise HTTPException(
+            400, f"secure_boot must be one of {', '.join(orch.SECURE_BOOT_MODES)}")
+    # `on` on arm64 would reach the builder and fail there, an hour into a
+    # debootstrap, over a package name. Refused here, with the reason.
+    if secure_boot == "on" and arch not in ("amd64", "arm64"):
+        raise HTTPException(400, f"no signed shim is packaged for {arch}")
     desktop = str(opts.get("desktop") or "").strip()
     if desktop and profile != "desktop":
         raise HTTPException(

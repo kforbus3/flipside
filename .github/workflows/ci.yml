@@ -462,6 +462,30 @@ jobs:
             --compress none --encrypt --unlock keyfile --luks-passphrase testluks \
             --output /output/ovl-test.img
 
+      - name: Build an image that requires Secure Boot to have worked
+        run: |
+          # --secure-boot on, so the build fails rather than quietly producing
+          # an unsigned image if the suite ever stops shipping signed shim
+          # packages. Unencrypted and small: this run is about the firmware
+          # chain, and LUKS would only add unlock handling to the harness.
+          ./builder/run.sh --arch amd64 --distro debian --suite trixie \
+            --hostname sb --username ci --password ci --image-size 8 \
+            --compress none --secure-boot on \
+            --output /output/sb-test.img
+
+      - name: An image boots with UEFI Secure Boot enforcing
+        run: |
+          # The easiest claim in this project to make falsely: an image with
+          # shim on its ESP boots fine on firmware with Secure Boot switched
+          # off, and so does one without. So the harness runs three times --
+          # enforcing, enforcing with the loader damaged (which MUST fail, or
+          # the firmware was never checking and the first run proved nothing),
+          # and with Secure Boot off (which must still work, because most
+          # machines in the field have it disabled).
+          docker run --rm --privileged --platform=linux/amd64 \
+            -v "$PWD/output":/output -v "$PWD/scripts":/s \
+            --entrypoint bash debian-ab-builder:amd64 /s/test-secure-boot.sh
+
       - name: Root overlay boots and /home gets the whole disk
         run: |
           docker run --rm --privileged -v "$PWD/output":/output -v "$PWD/scripts":/s \

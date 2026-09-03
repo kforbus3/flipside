@@ -36,6 +36,15 @@ EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
 # os-release alone cannot do. make-bundle.sh replaces it with the bundle's
 # version, so an updated slot reports the bundle it was installed from.
 IMAGE_VERSION="${IMAGE_VERSION:-}"      # empty = UTC build timestamp
+# UEFI Secure Boot. `auto` installs the signed shim and GRUB and uses them if
+# the suite has them, which every current Debian and Ubuntu does; `on` fails the
+# build if they cannot be had, so a fleet that requires Secure Boot cannot be
+# handed an image that quietly does not support it; `off` is the old layout.
+#
+# A Secure Boot image also boots fine with Secure Boot switched off, and the
+# BIOS path is untouched either way -- shim simply runs GRUB without verifying
+# it. So there is no image this costs anything.
+SECURE_BOOT="${SECURE_BOOT:-auto}"      # auto | on | off
 # Build profile: what the image is *for*, spelled as a named package set rather
 # than a list everyone retypes. minimal is exactly the base system this project
 # has always built -- the flag only names it, so existing builds change in
@@ -152,6 +161,13 @@ Usage: $0 [options]
   --ssh-pubkey FILE       Authorized SSH key file for the user
   --ssh-authorized-key K  Authorized SSH key passed inline
   --ssh-key-only          Disable SSH password auth (requires an SSH key)
+  --version STR           What this build calls itself; reported by each
+                          machine to the control plane (default: build time)
+  --secure-boot MODE      auto|on|off (default: $SECURE_BOOT). auto uses the
+                          distribution's signed shim and GRUB when the suite has
+                          them; on fails the build if it cannot; off keeps the
+                          old unsigned layout. A Secure Boot image also boots
+                          with Secure Boot disabled.
   --compress MODE         zstd|gzip|none (default: $COMPRESS)
   --encrypt               LUKS2-encrypt the root slots and overlay
   --unlock METHOD         passphrase|keyfile|tpm2|tang (default: $UNLOCK)
@@ -179,6 +195,7 @@ while [[ $# -gt 0 ]]; do
         --image-size) IMAGE_SIZE="$2"; shift 2;;
         --output) OUTPUT="$2"; shift 2;;
         --version) IMAGE_VERSION="$2"; shift 2;;
+        --secure-boot) SECURE_BOOT="$2"; shift 2;;
         --packages) EXTRA_PACKAGES="$2"; shift 2;;
         --profile) PROFILE="$2"; shift 2;;
         --desktop) DESKTOP_ENV="$2"; DESKTOP_SET=true; shift 2;;
@@ -462,12 +479,35 @@ case "$ARCH" in
     amd64)
         GRUB_PKGS="grub-pc grub-pc-bin grub-efi-amd64-bin"
         GRUB_EFI_TARGET="x86_64-efi"
+        # Signed by Microsoft (shim) and by the distribution (GRUB). The
+        # firmware trusts Microsoft's key; shim carries the distribution's and
+        # verifies GRUB with it; GRUB verifies the kernel through shim's
+        # protocol. Debian and Ubuntu both ship signed kernels by default, so
+        # the chain is complete without anything of ours being signed -- which
+        # is the whole reason to use theirs rather than enrol our own key on
+        # every machine.
+        SB_SHIM="shimx64.efi.signed"
+        SB_GRUB="grubx64.efi.signed"
+        SB_GRUB_DIR="x86_64-efi-signed"
+        SB_MM="mmx64.efi.signed"
+        SB_BOOT_NAME="BOOTX64.EFI"
+        SB_GRUB_NAME="grubx64.efi"
+        SB_MM_NAME="mmx64.efi"
+        SB_PKGS="shim-signed grub-efi-amd64-signed"
         GRUB_BIOS=1
         QEMU_ARCH="x86_64"
         ;;
     arm64)
         GRUB_PKGS="grub-efi-arm64 grub-efi-arm64-bin"
         GRUB_EFI_TARGET="arm64-efi"
+        SB_SHIM="shimaa64.efi.signed"
+        SB_GRUB="grubaa64.efi.signed"
+        SB_GRUB_DIR="arm64-efi-signed"
+        SB_MM="mmaa64.efi.signed"
+        SB_BOOT_NAME="BOOTAA64.EFI"
+        SB_GRUB_NAME="grubaa64.efi"
+        SB_MM_NAME="mmaa64.efi"
+        SB_PKGS="shim-signed grub-efi-arm64-signed"
         GRUB_BIOS=0
         QEMU_ARCH="aarch64"
         ;;
@@ -513,6 +553,25 @@ esac
 # reports the target version, and machines that all report the same string for
 # two different builds can never be told apart.
 IMAGE_VERSION="${IMAGE_VERSION:-$(date -u +%Y.%m.%d-%H%M)}"
+
+case "$SECURE_BOOT" in
+    auto|on|off) ;;
+    *) die "--secure-boot must be auto, on or off (got '$SECURE_BOOT')";;
+esac
+# Installed in their own apt run rather than folded into the main one, because
+# what happens when they are missing differs by mode. `on` must fail the build:
+# a fleet that requires Secure Boot cannot be handed an image that quietly does
+# not support it. `auto` must carry on: an unusual suite without signed shim
+# packages should still produce a working image, just not a Secure Boot one.
+#
+# Additive either way -- with Secure Boot switched off in firmware, an image
+# carrying shim boots exactly as it did before, and the BIOS path is untouched.
+SB_SETUP=""
+case "$SECURE_BOOT" in
+    on)   SB_SETUP="apt-get install -y --no-install-recommends ${SB_PKGS}";;
+    auto) SB_SETUP="apt-get install -y --no-install-recommends ${SB_PKGS} || \
+              echo 'NOTE: no signed shim/GRUB in this suite; Secure Boot will be unsupported' >&2";;
+esac
 # Minimum workable root slot, measured per distro. Ubuntu's linux-image-generic
 # hard-depends on linux-firmware and linux-modules-extra (~1.7 GiB installed),
 # which Debian's linux-image-amd64 does not — so the same 3 GiB slot that is
@@ -976,6 +1035,8 @@ if [ ! -e /usr/share/dbus-1/system-services/de.pengutronix.rauc.service ]; then
     echo "WARNING: RAUC's D-Bus service is missing; 'rauc install' will not work" >&2
 fi
 
+${SB_SETUP}
+
 systemctl enable ssh systemd-networkd systemd-resolved
 
 ${DESKTOP_SETUP}
@@ -1425,6 +1486,91 @@ fi
 # Boot must be disabled.
 chroot "$MNT" grub-install --target="$GRUB_EFI_TARGET" --efi-directory=/boot/efi \
     --boot-directory=/boot --removable --no-nvram
+
+# --- UEFI Secure Boot --------------------------------------------------------
+#
+# grub-install has just written its own unsigned GRUB to the removable path.
+# Under Secure Boot the firmware refuses to run it, which is why every previous
+# release said "disable Secure Boot" -- and on a lot of estates that is a policy
+# no, not an inconvenience: the machines this project images for desktops and
+# laptops are exactly the ones where it is mandated.
+#
+# The fix is to use the distribution's chain rather than enrol a key of our own
+# on every machine:
+#
+#   firmware --(Microsoft key)--> shim --(distro key, built into shim)--> GRUB
+#           --(shim lock protocol)--> kernel, which Debian and Ubuntu sign
+#
+# Nothing of ours needs signing, and nothing needs enrolling. shim goes at the
+# removable path so a mass-imaged machine boots with no NVRAM entry, exactly as
+# before; shim then loads grubx64.efi from beside itself.
+SECURE_BOOT_ACTIVE=false
+if [ "$SECURE_BOOT" != off ]; then
+    # The signed shim is versioned in some releases (shimx64.efi.signed.latest)
+    # and not in others. Take the first that exists rather than hard-coding one
+    # spelling and discovering the other in a year.
+    sb_shim=""
+    for candidate in "$MNT/usr/lib/shim/$SB_SHIM" \
+                     "$MNT/usr/lib/shim/${SB_SHIM}.latest" \
+                     "$MNT/usr/lib/shim/${SB_SHIM%.signed}"; do
+        [ -f "$candidate" ] && { sb_shim="$candidate"; break; }
+    done
+    sb_grub="$MNT/usr/lib/grub/$SB_GRUB_DIR/$SB_GRUB"
+
+    if [ -n "$sb_shim" ] && [ -f "$sb_grub" ]; then
+        install -D -m0644 "$sb_shim" "$BOOTMNT/efi/EFI/BOOT/$SB_BOOT_NAME"
+        install -D -m0644 "$sb_grub" "$BOOTMNT/efi/EFI/BOOT/$SB_GRUB_NAME"
+        # MokManager, for enrolling a key by hand at the console. Not needed for
+        # this chain -- shim already trusts the distribution's GRUB -- but shim
+        # looks for it when verification fails, and without it the failure is a
+        # bare "Security Policy Violation" and a dead machine rather than a
+        # prompt that explains itself.
+        for mm in "$MNT/usr/lib/shim/$SB_MM" "$MNT/usr/lib/shim/${SB_MM%.signed}"; do
+            [ -f "$mm" ] && { install -D -m0644 "$mm" "$BOOTMNT/efi/EFI/BOOT/$SB_MM_NAME"; break; }
+        done
+
+        # The distribution's signed GRUB has its prefix compiled in and cannot
+        # be told otherwise without rebuilding it, which would mean signing it,
+        # which is the thing being avoided. It looks for $prefix/grub.cfg on the
+        # partition it was loaded from -- the ESP -- so that file has to exist
+        # and hand off to the real configuration on BOOT.
+        #
+        # Written to both /EFI/debian and /EFI/ubuntu: the prefix differs by
+        # distribution, it is baked into a binary this build does not produce,
+        # and two 200-byte files cost nothing next to a machine that drops to a
+        # GRUB rescue prompt because the one that was written was the other one.
+        for prefix_dir in debian ubuntu; do
+            mkdir -p "$BOOTMNT/efi/EFI/$prefix_dir"
+            cat > "$BOOTMNT/efi/EFI/$prefix_dir/grub.cfg" <<'STUB'
+# Written by the Flipside image builder. Not the real configuration.
+#
+# The distribution's signed GRUB looks here because its prefix is compiled in.
+# Everything that decides what boots -- slot order, try counters, the recovery
+# entries -- lives on the BOOT partition, which is also where an update writes.
+# Keeping the real file there means this one never has to change.
+search --no-floppy --label BOOT --set=root
+if [ -e ($root)/grub/grub.cfg ]; then
+    set prefix=($root)/grub
+    configfile ($root)/grub/grub.cfg
+else
+    echo "Flipside: no /grub/grub.cfg on the partition labelled BOOT."
+    echo "The ESP was found and this stub ran, so firmware and shim are fine;"
+    echo "the BOOT partition is missing, unlabelled, or its config was removed."
+    sleep 30
+fi
+STUB
+        done
+        SECURE_BOOT_ACTIVE=true
+        log "Secure Boot: shim + signed GRUB installed at the removable path"
+    elif [ "$SECURE_BOOT" = on ]; then
+        die "--secure-boot on, but this suite provided no signed shim or GRUB.
+    Looked for /usr/lib/shim/$SB_SHIM and /usr/lib/grub/$SB_GRUB_DIR/$SB_GRUB.
+    Build with --secure-boot auto to fall back, or off to stop asking."
+    else
+        warn "No signed shim or GRUB in this suite; this image needs Secure Boot"
+        warn "disabled in firmware. Everything else about it is unchanged."
+    fi
+fi
 KVER="$(ls "$BOOTMNT" | sed -n 's/^vmlinuz-//p' | head -n1)"
 [ -n "$KVER" ] || die "no kernel found on BOOT partition"
 log "Kernel version: $KVER"
@@ -1560,6 +1706,7 @@ cat > "${OUT}.json" <<EOF
   "encrypted": $ENCRYPT,
   "update_keyring_sha256": "$KEYRING_FP",
   "packages": $SBOM_PACKAGES,
+  "secure_boot": $SECURE_BOOT_ACTIVE,
   "sbom": "$([ "$SBOM_PACKAGES" -gt 0 ] && echo "spdx+cyclonedx" || echo none)",
   "unlock": "$([ "$ENCRYPT" = true ] && echo "$UNLOCK" || echo none)",
   "compress": "$COMPRESS",
