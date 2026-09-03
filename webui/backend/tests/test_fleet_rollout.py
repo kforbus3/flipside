@@ -111,6 +111,27 @@ members = fleet.members(["prod"], [], False)
 check("the five real machines are in prod", len(members) == 5, members)
 check("a machine cannot add itself to a group", "intruder" not in members, members)
 
+print("== membership is cached, and the cache cannot go stale ==")
+# Resolving a target walks every host, and it happens per candidate rollout per
+# heartbeat, so it is cached. A cache that is not invalidated is much worse than
+# no cache: a machine added to a group is never picked up by the rollout that
+# was created for it, and a machine taken out keeps being offered updates --
+# both silent, and both visible only as "that machine did not update".
+check("a fresh group starts empty", fleet.members(["late"], [], False) == [])
+beat("m9")
+client.put("/api/fleet/hosts/m9", json={"groups": ["late"]}, headers=AUTH)
+check("adding a host to a group is visible immediately",
+      fleet.members(["late"], [], False) == ["m9"], fleet.members(["late"], [], False))
+client.put("/api/fleet/hosts/m9", json={"groups": []}, headers=AUTH)
+check("and removing it is too",
+      fleet.members(["late"], [], False) == [], fleet.members(["late"], [], False))
+# `all` resolves against the machines heard from, so a new one has to change it.
+before_all = len(fleet.members([], [], True))
+beat("brand-new-machine")
+check("a machine seen for the first time changes what 'all' means",
+      len(fleet.members([], [], True)) == before_all + 1,
+      (before_all, len(fleet.members([], [], True))))
+
 print("== a rollout with no version to check against is refused up front ==")
 r = client.post("/api/rollouts", json={"bundle": "unversioned.raucb", "groups": ["prod"]},
                 headers=AUTH)

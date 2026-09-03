@@ -255,12 +255,28 @@ def _check_source(source: str) -> None:
         raise Denied(f"{source!r} is outside the project directory")
 
 
-def read_headers(sock: socket.socket) -> tuple[bytes, str, str, dict[str, str]]:
-    """Read up to the end of the request headers. Returns (raw, method, path, headers)."""
-    buf = b""
+def read_headers(sock: socket.socket, buffered: bytes = b"") \
+        -> tuple[bytes, bytes, str, str, list[tuple[str, str]]]:
+    """Read one request's headers. Returns (raw_head, leftover, method, path, headers).
+
+    `buffered` is whatever was already read past the previous request on this
+    connection — the docker CLI reuses connections, so the next request line is
+    routinely sitting in the same recv() as the last body byte.
+
+    Headers come back as a list of pairs, not a dict. A dict collapses repeated
+    headers, and that is not academic: BuildKit's session request sends one
+    `X-Docker-Expose-Session-Grpc-Method` header per gRPC method it is
+    registering. Collapsed to one, the daemon registers a single method, the
+    filesync service is never advertised, and every build fails with
+    `failed to read dockerfile: no local sources enabled` -- an error that names
+    the Dockerfile and says nothing about headers or about a proxy.
+    """
+    buf = buffered
     while b"\r\n\r\n" not in buf:
         chunk = sock.recv(65536)
         if not chunk:
+            if not buf:
+                raise EOFError("connection closed")
             break
         buf += chunk
         # A request line and headers are small. Anything claiming otherwise is
@@ -268,17 +284,108 @@ def read_headers(sock: socket.socket) -> tuple[bytes, str, str, dict[str, str]]:
         if len(buf) > 256 * 1024:
             raise Denied("request headers are implausibly large")
     if not buf:
-        raise Denied("empty request")
-    head, _, rest = buf.partition(b"\r\n\r\n")
+        raise EOFError("connection closed")
+    head, sep, rest = buf.partition(b"\r\n\r\n")
+    if not sep:
+        raise Denied("malformed request")
     lines = head.decode("latin-1").split("\r\n")
     parts = lines[0].split(" ")
     if len(parts) < 2:
         raise Denied("malformed request line")
-    headers = {}
+    headers: list[tuple[str, str]] = []
     for line in lines[1:]:
         key, _, value = line.partition(":")
-        headers[key.strip().lower()] = value.strip()
-    return rest, parts[0], parts[1], headers
+        if key:
+            headers.append((key.strip(), value.strip()))
+    return head + b"\r\n\r\n", rest, parts[0], parts[1], headers
+
+
+def header(headers: list[tuple[str, str]], name: str) -> str:
+    name = name.lower()
+    for key, value in headers:
+        if key.lower() == name:
+            return value
+    return ""
+
+
+def is_upgrade(headers: list[tuple[str, str]]) -> bool:
+    """Does this request want the connection handed over wholesale?
+
+    BuildKit's /session and /grpc do, and so would attach and exec if they were
+    allowed. After an upgrade the connection stops being HTTP, so there is
+    nothing further to inspect and nothing further can be smuggled -- the check
+    that mattered already happened on the request that asked for it.
+    """
+    return "upgrade" in header(headers, "connection").lower() \
+        or bool(header(headers, "upgrade"))
+
+
+def _recv_exactly(sock: socket.socket, have: bytes, n: int) -> tuple[bytes, bytes]:
+    """Return (first n bytes, whatever was already read past them)."""
+    while len(have) < n:
+        chunk = sock.recv(min(65536, n - len(have)))
+        if not chunk:
+            break
+        have += chunk
+    return have[:n], have[n:]
+
+
+def _recv_line(sock: socket.socket, have: bytes) -> tuple[bytes, bytes]:
+    """Return (one CRLF-terminated line including the CRLF, the remainder)."""
+    while b"\r\n" not in have:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise Denied("connection ended mid-request")
+        have += chunk
+        if len(have) > 64 * 1024:
+            raise Denied("chunk header is implausibly large")
+    line, _, rest = have.partition(b"\r\n")
+    return line + b"\r\n", rest
+
+
+def forward_body(client: socket.socket, upstream: socket.socket,
+                 headers: list[tuple[str, str]], rest: bytes) -> bytes:
+    """Send exactly this request's body upstream. Returns anything left over.
+
+    Framing is parsed rather than assumed, because "everything after the
+    headers" is not the body -- it is the body *and whatever the client
+    pipelined behind it*. Relaying the lot would hand the daemon a second
+    request the allowlist never saw, which is the hole this whole class of proxy
+    exists to avoid. Leftover bytes are returned so the caller can refuse them
+    rather than pass them on.
+
+    Not left to the daemon to sort out. Go's HTTP server happens to stop reading
+    a connection once a request carried `Connection: close`, so in practice it
+    would ignore a pipelined second request -- but "safe because the upstream is
+    written in Go" is not a property this proxy should be relying on.
+    """
+    encoding = header(headers, "transfer-encoding").lower()
+    if "chunked" in encoding:
+        while True:
+            line, rest = _recv_line(client, rest)
+            upstream.sendall(line)
+            size_text = line.split(b";", 1)[0].strip()
+            try:
+                size = int(size_text, 16)
+            except ValueError:
+                raise Denied("malformed chunk size")
+            if size == 0:
+                # Trailers, then the blank line that ends them.
+                while True:
+                    line, rest = _recv_line(client, rest)
+                    upstream.sendall(line)
+                    if line == b"\r\n":
+                        return rest
+            body, rest = _recv_exactly(client, rest, size + 2)   # + CRLF
+            upstream.sendall(body)
+    try:
+        length = int(header(headers, "content-length") or 0)
+    except ValueError:
+        length = 0
+    if length:
+        body, rest = _recv_exactly(client, rest, length)
+        upstream.sendall(body)
+    return rest
 
 
 def relay(a: socket.socket, b: socket.socket) -> None:
@@ -308,38 +415,66 @@ def refuse(sock: socket.socket, reason: str, status: str = "403 Forbidden") -> N
 
 
 class Handler(socketserver.BaseRequestHandler):
+    """Exactly one request per connection, which is what makes the check sound.
+
+    The docker CLI keeps connections alive and sends the next request down the
+    same socket. A proxy that inspected the first request and then became a
+    transparent tunnel would pass everything after it -- `GET /version`, then
+    `POST /containers/other/exec` on the same socket, and the allowlist never
+    sees the second one. That is not a corner case; it is how the client
+    normally behaves.
+
+    Rather than parse response framing to know where one exchange ends and the
+    next begins, the forwarded request carries `Connection: close`. The daemon
+    answers and hangs up, the client re-dials for its next call, and every
+    request arrives at a proxy that has not yet decided anything. A unix-socket
+    connection per API call costs nothing worth measuring.
+
+    Upgraded connections (BuildKit's session and gRPC) are exempt, because after
+    an upgrade the connection stops being HTTP: there is nothing further to
+    inspect, and nothing further can be smuggled past a check that already
+    happened on the request that asked for the upgrade.
+    """
+
     def handle(self) -> None:
         client: socket.socket = self.request
         try:
-            rest, method, path, headers = read_headers(client)
+            raw_head, rest, method, path, headers = read_headers(client)
+        except EOFError:
+            return
         except Denied as exc:
             log.warning("malformed request: %s", exc)
-            try:
-                refuse(client, str(exc), "400 Bad Request")
-            except OSError:
-                pass
+            self._safe(refuse, client, str(exc), "400 Bad Request")
             return
         except OSError:
             return
+        self._one(client, raw_head, rest, method, path, headers)
 
+    def _safe(self, fn, *args) -> None:
+        try:
+            fn(*args)
+        except OSError:
+            pass
+
+    def _one(self, client: socket.socket, raw_head: bytes, rest: bytes,
+             method: str, path: str, headers: list[tuple[str, str]]) -> None:
         bare = path.split("?", 1)[0]
         if not allowed(method, path):
             log.warning("DENY %s %s (not on the allowlist)", method, bare)
-            try:
-                refuse(client, f"{method} {bare} is not on the allowlist")
-            except OSError:
-                pass
+            self._safe(refuse, client, f"{method} {bare} is not on the allowlist")
             return
 
-        body = b""
         if INSPECT.match(bare):
-            length = int(headers.get("content-length") or 0)
+            try:
+                length = int(header(headers, "content-length") or 0)
+            except ValueError:
+                length = 0
             # Only ever a small JSON document. `docker build` sends the whole
             # build context as its body, which is why that path is relayed
             # without inspection rather than read into memory first.
             if length > 1024 * 1024:
                 log.warning("DENY %s %s (create body of %d bytes)", method, bare, length)
-                refuse(client, "container create body is implausibly large")
+                self._safe(refuse, client, "container create body is implausibly large")
                 return
             body = rest
             while len(body) < length:
@@ -351,42 +486,76 @@ class Handler(socketserver.BaseRequestHandler):
                 check_create(body)
             except Denied as exc:
                 log.warning("DENY %s %s: %s", method, bare, exc)
-                try:
-                    refuse(client, str(exc))
-                except OSError:
-                    pass
+                self._safe(refuse, client, str(exc))
                 return
             rest = body
 
-        log.info("ALLOW %s %s", method, bare)
+        upgrade = is_upgrade(headers)
+        log.info("ALLOW %s %s%s", method, bare, " (upgrade)" if upgrade else "")
+
         try:
             upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             upstream.connect(UPSTREAM)
         except OSError as exc:
             log.error("upstream %s unreachable: %s", UPSTREAM, exc)
-            try:
-                refuse(client, f"the Docker daemon is unreachable: {exc}",
+            self._safe(refuse, client, f"the Docker daemon is unreachable: {exc}",
                        "502 Bad Gateway")
-            except OSError:
-                pass
             return
 
         with upstream:
-            # Replay the request exactly as it arrived. Reconstructing it from
-            # the parsed pieces would drop headers the daemon cares about and
-            # is a second parser to keep in step with the first.
-            raw_head = f"{method} {path} HTTP/1.1\r\n".encode("latin-1")
-            for key, value in headers.items():
-                raw_head += f"{key}: {value}\r\n".encode("latin-1")
-            raw_head += b"\r\n"
+            # Replayed byte for byte. Rebuilding the request from parsed pieces
+            # is a second serialiser to keep in step with the parser, and it
+            # only has to differ once -- BuildKit's session hands the connection
+            # over with headers that have to arrive exactly as sent.
+            head = raw_head
+            if not upgrade:
+                # One request per upstream connection, and the client's
+                # connection ends with it. That is what makes the check above
+                # sound: without it a keep-alive connection would carry a second
+                # request nobody looked at. An upgraded connection is exempt
+                # because it stops being HTTP the moment the daemon accepts it.
+                head = self._force_close(raw_head)
             try:
-                upstream.sendall(raw_head + rest)
+                upstream.sendall(head)
+                if upgrade:
+                    # Hand the connection over: after this it is no longer HTTP,
+                    # so there is no framing to respect and nothing further to
+                    # check. Both directions relay until one end hangs up.
+                    upstream.sendall(rest)
+                    up = threading.Thread(target=relay, args=(client, upstream),
+                                          daemon=True)
+                    up.start()
+                    relay(upstream, client)
+                    up.join(timeout=5)
+                    return
+                leftover = forward_body(client, upstream, headers, rest)
+            except Denied as exc:
+                log.warning("DENY %s %s: %s", method, bare, exc)
+                self._safe(refuse, client, str(exc), "400 Bad Request")
+                return
             except OSError:
                 return
-            up = threading.Thread(target=relay, args=(client, upstream), daemon=True)
-            up.start()
+            if leftover.strip():
+                # A pipelined second request. Real clients do not do this -- Go's
+                # transport waits for each response -- so this is somebody
+                # trying to get a request past the check by hiding it behind an
+                # allowed one. The first request has already gone upstream; the
+                # second stops here.
+                log.warning("DENY pipelined request after %s %s (%d bytes dropped)",
+                            method, bare, len(leftover))
+            # One direction only: the request is complete, and the response is
+            # read until the daemon closes -- which it does, because the
+            # forwarded request carried Connection: close.
             relay(upstream, client)
-            up.join(timeout=5)
+
+    @staticmethod
+    def _force_close(raw_head: bytes) -> bytes:
+        lines = raw_head.split(b"\r\n")
+        kept = [ln for ln in lines
+                if ln and not ln.lower().startswith(b"connection:")
+                and not ln.lower().startswith(b"keep-alive:")]
+        kept.append(b"Connection: close")
+        return b"\r\n".join(kept) + b"\r\n\r\n"
 
 
 class Server(socketserver.ThreadingUnixStreamServer):
