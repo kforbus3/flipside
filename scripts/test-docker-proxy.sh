@@ -26,7 +26,7 @@ docker info >/dev/null 2>&1 || { echo "SKIP: no reachable docker daemon"; exit 0
 
 WORK="$(mktemp -d)"
 trap 'kill ${PROXY_PID:-0} 2>/dev/null; docker rm -f dp-test-victim >/dev/null 2>&1;
-      docker rmi -f dp-test-image debian-ab-builder:dptest >/dev/null 2>&1; rm -rf "$WORK"' EXIT
+      docker rmi -f debian-ab-builder:dptest >/dev/null 2>&1; rm -rf "$WORK"' EXIT
 
 ok=0; fail=0
 pass() { ok=$((ok+1)); echo "  PASS  $1"; }
@@ -70,7 +70,10 @@ EOF
 # BuildKit on every current Docker, which does not touch /build at all -- it
 # opens a hijacked /session and speaks gRPC over /grpc. Neither was on the
 # allowlist, so every build failed with a bare 403, and the test said "skipped".
-if docker build -t dp-test-image "$WORK/ctx" > "$WORK/build.log" 2>&1; then
+# Tagged as the builder from the start rather than built and then renamed:
+# `docker tag` is POST /images/{name}/tag, which is not on the allowlist and
+# should not be -- the project builds its images with -t and never renames one.
+if docker build -t debian-ab-builder:dptest "$WORK/ctx" > "$WORK/build.log" 2>&1; then
     pass "docker build"
 else
     if grep -qiE "network|dial tcp|no such host|lookup|TLS handshake" "$WORK/build.log"; then
@@ -85,10 +88,8 @@ else
     fi
 fi
 
-# Running a container from an allowed image, which is what a job is. The image
-# allowlist is a regex on names, so the test image is tagged to match it.
-if docker image inspect dp-test-image >/dev/null 2>&1; then
-    docker tag dp-test-image debian-ab-builder:dptest >/dev/null 2>&1
+# Running a container from an allowed image, which is what a job is.
+if docker image inspect debian-ab-builder:dptest >/dev/null 2>&1; then
     if out="$(docker run --rm debian-ab-builder:dptest cat /marker 2>&1)"; then
         [ "$out" = "built" ] && pass "docker run of an allowed image" \
                              || bad "docker run of an allowed image" "$out"

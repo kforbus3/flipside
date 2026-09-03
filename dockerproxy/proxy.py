@@ -52,7 +52,7 @@ WEBUI_CONTAINER = os.environ.get("WEBUI_CONTAINER", "debian-ab-webui")
 # repo too. A container created from anything else is not a build.
 IMAGE_ALLOW = re.compile(os.environ.get(
     "IMAGE_ALLOW",
-    r"^(debian-ab-(builder|imager|webui|dnsmasq|http))(:[\w.\-]+)?$"))
+    r"^(debian-ab-(builder|imager|webui|dnsmasq|http|dockerproxy))(:[\w.\-]+)?$"))
 # Only these images may be created with elevated privileges: the builder and the
 # imager genuinely need loop devices and mounts. Nothing else does, and a
 # privileged container is a host-root container.
