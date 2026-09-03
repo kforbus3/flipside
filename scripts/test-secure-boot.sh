@@ -108,6 +108,80 @@ else
     no "the prefix stub GRUB looks for is present" "(no /EFI/*/grub.cfg)"
 fi
 
+# --- a probe inside the machine ----------------------------------------------
+#
+# The firmware's own word for whether Secure Boot was enforcing, read from the
+# EFI variable rather than from the kernel log. The first version of this test
+# grepped the boot log for "Secure boot enabled" and failed against a machine
+# that had booted perfectly under enforcing firmware -- the images boot with
+# `quiet`, which suppresses exactly that line. Asking the running system is both
+# authoritative and independent of how noisy the kernel was told to be.
+#
+# The probe powers the machine off when it is done, so a run ends in seconds
+# rather than sitting at a login prompt until the timeout.
+LO=$(losetup -f --show -P "$DISK") || fail "losetup"
+BB=$(basename "$LO")
+part_node() {   # part_node <number> -> device path, creating the node if needed
+    local n="$1" node="/dev/${BB}p$1" mj mn
+    if [ ! -b "$node" ]; then
+        # Loop partition nodes are not created inside a container; make them by
+        # hand from what the kernel already knows.
+        [ -e "/sys/class/block/${BB}p${n}/dev" ] || return 1
+        IFS=: read -r mj mn < "/sys/class/block/${BB}p${n}/dev"
+        rm -f "$node"; mknod "$node" b "$mj" "$mn" || return 1
+    fi
+    echo "$node"
+}
+ROOTNUM=$(sgdisk -p "$DISK" 2>/dev/null | awk '$NF == "rootfs-a" { print $1; exit }')
+[ -n "$ROOTNUM" ] || { losetup -d "$LO"; fail "no rootfs-a partition on $DISK"; }
+ROOTDEV=$(part_node "$ROOTNUM") || { losetup -d "$LO"; fail "no node for partition $ROOTNUM"; }
+mkdir -p /mnt/sbslot
+mount "$ROOTDEV" /mnt/sbslot || { losetup -d "$LO"; fail "could not mount the root slot"; }
+
+cat > /mnt/sbslot/usr/local/sbin/sb-probe.sh <<'PROBE'
+#!/bin/sh
+exec > /dev/console 2>&1
+echo "SB-PROBE-START"
+# efivarfs: the first four bytes are the variable's attributes, the fifth is the
+# value. systemd mounts this automatically on an EFI boot; if it is not there,
+# the machine did not boot via UEFI at all, which is itself worth saying.
+VAR=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+if [ ! -d /sys/firmware/efi ]; then
+    echo "secure-boot: no-efi"
+elif [ -r "$VAR" ]; then
+    echo "secure-boot: $(od -An -t u1 -j 4 -N 1 "$VAR" 2>/dev/null | tr -d ' ')"
+else
+    # The firmware build without Secure Boot support does not define the
+    # variable at all. Absent is a real answer and not the same as zero.
+    echo "secure-boot: absent"
+fi
+echo "SB-PROBE-END"
+systemctl poweroff --no-block
+PROBE
+chmod 0755 /mnt/sbslot/usr/local/sbin/sb-probe.sh
+
+cat > /mnt/sbslot/etc/systemd/system/sb-probe.service <<'UNIT'
+[Unit]
+Description=Report the firmware's Secure Boot state to the console, then power off
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sb-probe.sh
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p /mnt/sbslot/etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/sb-probe.service \
+   /mnt/sbslot/etc/systemd/system/multi-user.target.wants/sb-probe.service
+sync
+umount /mnt/sbslot
+losetup -d "$LO"
+echo "  probe installed into rootfs-a (partition $ROOTNUM)"
+
+sb_state() {   # sb_state <logfile> -> the probe's answer, or empty
+    sed -n 's/^ *secure-boot: *//p' "$1" 2>/dev/null | tr -d '\r' | head -1
+}
+
 boot() {   # boot <label> <code.fd> <vars.fd> <timeout> <logfile>
     cp "$3" "/tmp/vars-$1.fd"
     echo ""
@@ -124,21 +198,20 @@ boot() {   # boot <label> <code.fd> <vars.fd> <timeout> <logfile>
 
 # --- 1. enforcing firmware, image as built -----------------------------------
 boot enforcing "$CODE_SB" "$VARS_MS" "$BOOT_TIMEOUT" /output/sb-enforcing.log
-if grep -qa "login:" /output/sb-enforcing.log; then
+if grep -qa "SB-PROBE-START" /output/sb-enforcing.log; then
     pass "the image boots with Secure Boot enforcing"
 else
     no "the image boots with Secure Boot enforcing" "(see /output/sb-enforcing.log)"
     tail -30 /output/sb-enforcing.log | sed 's/^/      /'
 fi
-# The firmware's word for it, from inside the booted system. Without this the
-# run above only proves it booted, which it would also do on firmware that had
-# quietly fallen back to no verification.
-if grep -qaE "Secure boot enabled|UEFI Secure Boot is enabled|secureboot: Secure boot enabled" \
-        /output/sb-enforcing.log; then
-    pass "the kernel agrees Secure Boot was on"
+# The firmware's own word for it, read from the EFI variable inside the booted
+# machine. Without this the run above only proves it booted, which it would also
+# do on firmware that had quietly fallen back to no verification.
+state="$(sb_state /output/sb-enforcing.log)"
+if [ "$state" = "1" ]; then
+    pass "and the firmware reports Secure Boot as enforcing"
 else
-    no "the kernel agrees Secure Boot was on" \
-       "(no 'Secure boot enabled' in the log — the firmware may not have enforced)"
+    no "and the firmware reports Secure Boot as enforcing" "(probe said '${state:-nothing}')"
 fi
 
 # --- 2. the control: a damaged loader must be refused ------------------------
@@ -158,7 +231,7 @@ mt mcopy -o /tmp/BOOTX64.EFI.bad ::/EFI/BOOT/BOOTX64.EFI >/dev/null 2>&1 \
     || fail "could not write the damaged loader back"
 
 boot tampered "$CODE_SB" "$VARS_MS" "$DENY_TIMEOUT" /output/sb-tampered.log
-if grep -qa "login:" /output/sb-tampered.log; then
+if grep -qa "SB-PROBE-START" /output/sb-tampered.log; then
     no "a damaged loader is refused" \
        "IT BOOTED — the firmware is not enforcing, so nothing above proved anything"
     tail -20 /output/sb-tampered.log | sed 's/^/      /'
@@ -180,12 +253,20 @@ mt mcopy -o /tmp/BOOTX64.EFI.orig ::/EFI/BOOT/BOOTX64.EFI >/dev/null 2>&1 \
 # one of them.
 if [ -n "$CODE_PLAIN" ] && [ -n "$VARS_PLAIN" ]; then
     boot plain "$CODE_PLAIN" "$VARS_PLAIN" "$BOOT_TIMEOUT" /output/sb-off.log
-    if grep -qa "login:" /output/sb-off.log; then
+    if grep -qa "SB-PROBE-START" /output/sb-off.log; then
         pass "the same image still boots with Secure Boot disabled"
     else
         no "the same image still boots with Secure Boot disabled" "(see /output/sb-off.log)"
         tail -30 /output/sb-off.log | sed 's/^/      /'
     fi
+    # And it really was off, so this run is a different case from the first
+    # rather than the same firmware twice under two names.
+    state="$(sb_state /output/sb-off.log)"
+    case "$state" in
+        0|absent) pass "and that firmware really did have it off (probe: $state)";;
+        "")       no "and that firmware really did have it off" "(the probe did not run)";;
+        *)        no "and that firmware really did have it off" "(probe said '$state')";;
+    esac
 else
     echo "  SKIP  no plain OVMF firmware here to test the Secure-Boot-off case"
 fi
