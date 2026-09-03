@@ -113,6 +113,18 @@ class Fleet:
         self._hosts: dict[str, Any] | None = None
         self._dirty = False
         self._flush_timer: threading.Timer | None = None
+        # Group membership changes rarely and is resolved constantly: every
+        # heartbeat asks which machines each candidate rollout covers, which is
+        # a walk of every host per rollout per beat. A fleet of five hundred
+        # with a handful of rollouts turns one check-in into thousands of
+        # dictionary lookups, several hundred times a minute, to produce the
+        # same answer every time.
+        #
+        # So results are cached against a counter that anything writing to the
+        # host records bumps. A stale answer is not possible: the only inputs
+        # are the host records and the state keys, and both bump it.
+        self._epoch = 0
+        self._members_cache: dict[tuple, list[str]] = {}
 
     # ---------------------------------------------------------------- loading
 
@@ -135,6 +147,8 @@ class Fleet:
             self._state = None
             self._hosts = None
             self._dirty = False
+            self._epoch += 1
+            self._members_cache.clear()
 
     # --------------------------------------------------------------- flushing
 
@@ -175,6 +189,9 @@ class Fleet:
         with self._lock:
             self._ensure_loaded()
             assert self._state is not None
+            if ident not in self._state:
+                self._epoch += 1
+                self._members_cache.clear()
             rec = self._state.setdefault(ident, {"id": ident, "first_seen": now})
             rec["last_seen"] = now
             for key, value in fields.items():
@@ -219,6 +236,8 @@ class Fleet:
             if not rec:
                 self._hosts["hosts"].pop(ident, None)
             _write_atomic(_hosts_path(), self._hosts)
+            self._epoch += 1
+            self._members_cache.clear()
             return dict(rec)
 
     def groups(self) -> dict[str, Any]:
@@ -243,6 +262,8 @@ class Fleet:
             assert self._hosts is not None
             self._hosts["groups"][name] = {"description": description}
             _write_atomic(_hosts_path(), self._hosts)
+            self._epoch += 1
+            self._members_cache.clear()
             return {"name": name, "description": description}
 
     def delete_group(self, name: str) -> int:
@@ -257,6 +278,8 @@ class Fleet:
                     rec["groups"] = [g for g in rec["groups"] if g != name]
                     touched += 1
             _write_atomic(_hosts_path(), self._hosts)
+            self._epoch += 1
+            self._members_cache.clear()
             return touched
 
     def members(self, groups: list[str] | None = None, hosts: list[str] | None = None,
@@ -271,14 +294,27 @@ class Fleet:
         with self._lock:
             self._ensure_loaded()
             assert self._hosts is not None and self._state is not None
+            key = (self._epoch, tuple(sorted(groups or [])), tuple(sorted(hosts or [])),
+                   everything)
+            cached = self._members_cache.get(key)
+            if cached is not None:
+                return list(cached)
             if everything:
-                return sorted(set(self._state) | set(self._hosts["hosts"]))
-            out: set[str] = set(hosts or [])
-            for g in groups or []:
-                for ident, rec in self._hosts["hosts"].items():
-                    if g in rec.get("groups", []):
-                        out.add(ident)
-            return sorted(out)
+                out_list = sorted(set(self._state) | set(self._hosts["hosts"]))
+            else:
+                out: set[str] = set(hosts or [])
+                for g in groups or []:
+                    for ident, rec in self._hosts["hosts"].items():
+                        if g in rec.get("groups", []):
+                            out.add(ident)
+                out_list = sorted(out)
+            # Bounded by the number of distinct rollout targets, which is small;
+            # cleared wholesale on any change rather than evicted, because the
+            # epoch key would make every stale entry unreachable anyway.
+            if len(self._members_cache) > 256:
+                self._members_cache.clear()
+            self._members_cache[key] = out_list
+            return list(out_list)
 
     # ------------------------------------------------------------------ views
 
