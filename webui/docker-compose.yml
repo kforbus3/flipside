@@ -34,6 +34,19 @@ services:
       - OIDC_DEFAULT_ROLE=${OIDC_DEFAULT_ROLE:-deny}
       - OIDC_DISPLAY_NAME=${OIDC_DISPLAY_NAME:-Single sign-on}
       - OIDC_SCOPES=${OIDC_SCOPES:-openid profile email}
+      # Fleet control plane. CONTROL_URL normally comes from server/.env (the
+      # Provisioning page writes it there); set it here only to override that.
+      - CONTROL_URL=${CONTROL_URL:-}
+      - AGENT_INTERVAL=${AGENT_INTERVAL:-300}
+      - AGENT_TOKEN=${AGENT_TOKEN:-}
+      # Observability. All optional and all off by default.
+      - LOG_JSON=${LOG_JSON:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - METRICS_PUBLIC=${METRICS_PUBLIC:-false}
+      - AUDIT_SYSLOG=${AUDIT_SYSLOG:-}
+      - AUDIT_SYSLOG_HOSTNAME=${AUDIT_SYSLOG_HOSTNAME:-}
+      - AUDIT_HTTP_URL=${AUDIT_HTTP_URL:-}
+      - AUDIT_HTTP_TOKEN=${AUDIT_HTTP_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_PROJECT_DIR:-..}:/project

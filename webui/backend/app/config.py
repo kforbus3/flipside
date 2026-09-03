@@ -64,6 +64,28 @@ class Settings(BaseSettings):
     # control plane is reachable from a network you do not trust.
     agent_token: str = ""
 
+    # --- observability ---------------------------------------------------------
+    # Structured JSON logs to stdout instead of uvicorn's human format. Off by
+    # default: someone running `make webui-logs` to see what a build is doing is
+    # better served by prose, and turning this on is the deliberate act of
+    # someone who has somewhere to send it.
+    log_json: bool = False
+    log_level: str = "info"
+    # Prometheus scrape endpoint. Behind the normal viewer role by default, so a
+    # scrape uses an API token like anything else — /metrics names versions,
+    # machine counts and rollout progress, which is a fair map of the estate for
+    # anyone who can read it. Set true only when it is on a network where that
+    # does not matter.
+    metrics_public: bool = False
+
+    # --- shipping the audit trail off the box (see app/forwarder.py) -----------
+    # syslog target: "host:port", "udp://host:514", or "tcp://host:601".
+    audit_syslog: str = ""
+    audit_syslog_hostname: str = ""     # empty = this container's hostname
+    # HTTP collector: every event POSTed as one JSON object.
+    audit_http_url: str = ""
+    audit_http_token: str = ""          # sent as `Authorization: Bearer`
+
     @property
     def output_dir(self) -> str:
         return f"{self.project_dir}/output"

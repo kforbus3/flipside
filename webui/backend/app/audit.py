@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any
 
+from app import forwarder as _forwarder
 from app.config import settings
 
 MAX_EVENTS = 20000
@@ -47,6 +48,17 @@ def record(actor: str, role: str, method: str, path: str, status: int,
     if summary:
         row["summary"] = summary
     row.update({k: v for k, v in extra.items() if v not in (None, "")})
+    # Off the box first, and never blocking on it -- see forwarder.py. The local
+    # file is bounded and trimmed oldest-first, so it is a buffer rather than an
+    # archive; a collector that has the event is the one that still has it in a
+    # year, or after somebody with root decides it should not exist.
+    #
+    # Before the local write on purpose: if the disk is full, the line that
+    # cannot be written here is exactly the one worth having somewhere else.
+    try:
+        _forwarder.forwarder.submit(dict(row))
+    except Exception:                                    # noqa: BLE001
+        pass
     try:
         with _lock:
             os.makedirs(settings.output_dir, exist_ok=True)

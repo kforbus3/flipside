@@ -43,6 +43,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from . import metrics
 from .config import settings
 from .fleet import _write_atomic, _read_json, fleet
 
@@ -280,6 +281,7 @@ class Rollouts:
                     m["attempts"] = m.get("attempts", 0) + 1
                     m.pop("error", None)
                     changed = True
+                    metrics.inc("flipside_rollout_offers_total", version=rec["version"])
                     action = {"type": "update", "rollout": rec["id"],
                               "bundle_url": rec["bundle_url"], "version": rec["version"]}
 
@@ -345,6 +347,8 @@ class Rollouts:
                 m["state"] = "verified"
                 m["at"] = now
                 m.pop("error", None)
+                metrics.inc("flipside_rollout_results_total", outcome="verified",
+                            version=rec["version"])
                 return True
 
         if said in ("downloading", "installing"):
@@ -357,6 +361,8 @@ class Rollouts:
             m["state"] = "failed"
             m["at"] = now
             m["error"] = str(reported.get("update_error") or "the agent reported a failure")
+            metrics.inc("flipside_rollout_results_total", outcome="failed",
+                        version=rec["version"])
 
         return m != before
 

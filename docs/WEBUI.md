@@ -281,6 +281,88 @@ group names), and needs `groupMembershipClaims` enabled on the app
 registration; **Okta** needs a Groups claim filter on the authorization
 server; **Authentik** includes `groups` with its default scope mappings.
 
+## Metrics, logs, and the audit trail
+
+### Prometheus
+
+`GET /metrics` (also `/api/metrics`) in the standard exposition format. It needs
+a **viewer** credential by default — create a viewer API token on the Tokens
+page and give it to Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: flipside
+    authorization:
+      credentials: flt_...
+    static_configs:
+      - targets: ["flipside.example.com:8080"]
+```
+
+Set `METRICS_PUBLIC=true` to drop the requirement. That is a real decision, not
+a formality: `/metrics` names the versions running in the field, how many
+machines there are, and how each live rollout is going — a fair map of the
+estate for anyone who can read it.
+
+What is worth alerting on:
+
+| metric | why |
+| --- | --- |
+| `flipside_rollouts{state="halted"}` | a rollout stopped itself on its failure budget |
+| `flipside_fleet_machines{presence="offline"}` | machines that have stopped checking in |
+| `flipside_fleet_degraded` | machines whose last check-in reported a failed unit |
+| `flipside_never_booted` | imaged and never heard from — the imager cannot see this |
+| `flipside_disk_free_bytes` | images and bundles fill a disk quietly |
+| `flipside_audit_last_success_seconds` | audit forwarding has stopped arriving |
+
+Label values never come from user data. Request paths are bucketed
+(`/api/fleet/hosts/:id`), because one time series per machine id is how a
+metrics endpoint takes down the Prometheus scraping it — and a fleet checking in
+every five minutes is exactly the shape that does it.
+
+`GET /api/metrics.json` returns the same headline numbers as an object, for
+anyone not running Prometheus.
+
+### Structured logs
+
+`LOG_JSON=true` switches stdout to one JSON object per line, applied to
+uvicorn's loggers as well as the application's — configuring only one produces
+structured lines interleaved with human-formatted access lines, which is neither
+parseable nor readable. `LOG_LEVEL` takes the usual names.
+
+Prose stays the default: `make webui-logs` to watch a build is better read as
+prose, and turning this on is the deliberate act of someone who has somewhere to
+send it.
+
+### Shipping the audit trail off the box
+
+`output/audit.jsonl` is bounded and trimmed oldest-first, so it is a buffer
+rather than an archive — and it lives on the machine being audited, which is the
+copy that goes when the disk goes, and the copy someone with root deletes.
+
+Point it somewhere else:
+
+```
+AUDIT_SYSLOG=udp://siem.example.com:514      # or tcp://host:601
+AUDIT_HTTP_URL=https://collector.example.com/flipside
+AUDIT_HTTP_TOKEN=...                          # sent as Authorization: Bearer
+```
+
+Events go out as RFC 5424 with the event itself as a JSON message (every
+collector parses a JSON body; half of them mangle SD-PARAMs), or as one JSON
+object POSTed per event. Both can be on at once.
+
+**Delivery never blocks a request.** The forwarder sits behind every mutating
+API call, so a collector that is slow or wedged must not make this server slow
+or wedged with it. Events go onto a bounded queue and one background thread
+sends them; when the queue is full the *oldest* is dropped and a counter goes
+up, because a full queue means the collector has been unreachable for a while
+and the recent events are the ones worth keeping.
+
+Failures are visible rather than silent — "nothing is arriving" and "nothing
+happened" look identical at the collector, so alert on
+`flipside_audit_last_success_seconds` rather than on the queue depth, which is
+empty both when everything is fine and when nothing is being sent at all.
+
 ## Running it
 
 ```bash

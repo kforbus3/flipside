@@ -4,7 +4,7 @@ from collections import deque
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
-from app import audit, oidc, sessions, users
+from app import audit, metrics, oidc, sessions, users
 from app.config import settings
 from app.security import Principal, client_ip, oauth2_scheme, require_admin, require_viewer
 
@@ -49,6 +49,7 @@ async def login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
     ip = client_ip(request)
     now = time.monotonic()
     if _throttled(f"{username}|{ip}", now):
+        metrics.inc("flipside_login_attempts_total", outcome="throttled")
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                             "Too many failed logins; try again in a minute")
     rec = users.verify(username, form.password)
@@ -58,8 +59,10 @@ async def login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
         audit.record(actor=username or "-", role="", method="POST",
                      path="/api/auth/login", status=401, ip=ip,
                      summary="login failed")
+        metrics.inc("flipside_login_attempts_total", outcome="failure")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
                             "Incorrect username or password")
+    metrics.inc("flipside_login_attempts_total", outcome="success")
     token = sessions.create(rec["username"], ip=ip)
     audit.record(actor=rec["username"], role=rec.get("role", ""), method="POST",
                  path="/api/auth/login", status=200, ip=ip, summary="logged in")

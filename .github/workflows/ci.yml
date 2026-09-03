@@ -160,6 +160,20 @@ jobs:
           # exactly like a working UI.
           python tests/test_identity.py
 
+      - name: Metrics, structured logs, and shipping the audit trail
+        working-directory: webui/backend
+        run: |
+          # Three failures that all look like success. Metric labels built from
+          # user data mint one time series per machine and take down the
+          # Prometheus scraping them a week later. A JSON log line that is not
+          # JSON, or a traceback split over forty lines, reaches the collector
+          # as forty unparseable events. And an audit forwarder that blocks
+          # wedges every mutating API call behind a wedged SIEM -- tested here
+          # against a collector that *hangs* rather than one that refuses,
+          # because a refused connection returns instantly and would pass
+          # whether the forwarder were asynchronous or not.
+          python tests/test_observability.py
+
       - name: SBOMs parse, and the search tells "no matches" from "nothing to match"
         working-directory: webui/backend
         run: |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,7 +16,12 @@ from fastapi import Request
 
 from app import __version__
 from app import audit as _audit
+from app import logs as _logs
+from app import metrics as _metrics
 from app import routers as _routers
+from app.config import settings as _settings
+
+_logs.configure(_settings.log_json, _settings.log_level)
 
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "..", "static"))
 
@@ -38,7 +44,7 @@ app = FastAPI(title="Flipside UI", version=__version__)
 # what people did, which is the only thing the log is for. What an operator did
 # to the fleet is audited where it happens (/api/rollouts, /api/fleet/hosts);
 # what a machine said about itself is fleet state, and lives in state.json.
-_UNAUDITED ={"/api/imaging/report", "/api/imaging/checkin", "/api/auth/login",
+_UNAUDITED = {"/api/imaging/report", "/api/imaging/checkin", "/api/auth/login",
               "/api/auth/oidc/exchange", "/api/fleet/heartbeat"}
 
 
@@ -53,7 +59,28 @@ async def audit_mutations(request: Request, call_next):
     that never authenticated is recorded as anonymous, which for a mutating
     call is worth a line too — that is someone knocking.
     """
+    started = time.monotonic()
     response = await call_next(request)
+    # Counted for every request, audited for very few. The label is a bucketed
+    # path, never the real one: it carries machine ids and image names, and one
+    # time series per machine id is how a /metrics endpoint takes down the
+    # Prometheus scraping it (see metrics.path_bucket).
+    _metrics.inc("flipside_http_requests_total",
+                 method=request.method,
+                 path=_metrics.path_bucket(request.url.path),
+                 status=f"{response.status_code // 100}xx")
+    if request.url.path == "/api/fleet/heartbeat":
+        _metrics.inc("flipside_heartbeats_total")
+    if _settings.log_json:
+        # Only under JSON logging: uvicorn already prints a readable access log,
+        # and two access logs in the console is worse than one.
+        _logs.log.info("request", extra={
+            "method": request.method, "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            "actor": getattr(getattr(request.state, "principal", None), "name", ""),
+            "ip": request.client.host if request.client else "",
+        })
     if request.method != "GET" and request.url.path.startswith("/api") \
             and request.url.path not in _UNAUDITED:
         principal = getattr(request.state, "principal", None)
@@ -82,6 +109,14 @@ for _mod in pkgutil.iter_modules(_routers.__path__):
     _router = getattr(importlib.import_module(f"app.routers.{_mod.name}"), "router", None)
     if _router is not None:
         app.include_router(_router, prefix="/api")
+
+# Prometheus scrapes /metrics by default, and every scrape config, dashboard and
+# operator muscle-memory assumes it. Mounted at the root as well as under /api
+# so nobody has to discover that this one is somewhere else — without it the SPA
+# catch-all below answers /metrics with the front page, which a scraper stores
+# as a failed parse rather than reporting as a wrong path.
+from app.routers.metrics import prometheus as _prometheus   # noqa: E402
+app.add_api_route("/metrics", _prometheus, methods=["GET"], include_in_schema=False)
 
 _assets = os.path.join(STATIC_DIR, "assets")
 if os.path.isdir(_assets):
